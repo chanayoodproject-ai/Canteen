@@ -1,0 +1,35 @@
+@import "tailwindcss";
+
+@theme inline {
+  --font-sans: var(--font-thai), "Noto Sans Thai", "Leelawadee UI", sans-serif;
+  --color-chili: #c4452d;
+  --color-herb: #2f6b4f;
+  --color-ink: #2c1810;
+  --color-paper: #fbf3e8;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  min-height: 100vh;
+  overflow-x: hidden;
+  color: #2c1810;
+  font-family: var(--font-thai), "Noto Sans Thai", "Leelawadee UI", sans-serif;
+  background:
+    radial-gradient(900px 420px at -10% -20%, rgba(167, 230, 154, 0.55), transparent 60%),
+    radial-gradient(700px 380px at 110% 0%, rgba(255, 214, 140, 0.45), transparent 55%),
+    linear-gradient(180deg, #f6fff3 0%, #fbf6ec 42%, #f4f7ee 100%);
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+::selection {
+  background: #f3c1b4;
+}

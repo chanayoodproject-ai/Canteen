@@ -1,0 +1,24 @@
+name: Send canteen menus
+
+on:
+  schedule:
+    # ทุก 10 นาที ตามเวลา UTC ของ GitHub แอปจะตัดสินใจเองตาม Asia/Bangkok
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call idempotent sender
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$APP_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "ตั้ง secret APP_URL และ CRON_SECRET ก่อน"
+            exit 1
+          fi
+          curl --fail-with-body --silent --show-error --max-time 40 \
+            -X POST "$APP_URL/api/cron/send" \
+            -H "Authorization: Bearer $CRON_SECRET"
