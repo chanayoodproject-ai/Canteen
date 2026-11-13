@@ -2,8 +2,9 @@ name: Send canteen menus
 
 on:
   schedule:
-    # ทุก 10 นาที ตามเวลา UTC ของ GitHub แอปจะตัดสินใจเองตาม Asia/Bangkok
-    - cron: "*/10 * * * *"
+    # Every 5 minutes in UTC; the app decides using Asia/Bangkok send times.
+    # GitHub cron can lag 5–15 minutes.
+    - cron: "*/5 * * * *"
   workflow_dispatch:
 
 jobs:
@@ -15,10 +16,11 @@ jobs:
           APP_URL: ${{ secrets.APP_URL }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
-          if [ -z "$APP_URL" ] || [ -z "$CRON_SECRET" ]; then
-            echo "ตั้ง secret APP_URL และ CRON_SECRET ก่อน"
-            exit 1
+          APP_URL="${APP_URL:-https://canteen-mi-arai-kin.vercel.app}"
+          AUTH_HEADER=()
+          if [ -n "$CRON_SECRET" ]; then
+            AUTH_HEADER=(-H "Authorization: Bearer $CRON_SECRET")
           fi
           curl --fail-with-body --silent --show-error --max-time 40 \
             -X POST "$APP_URL/api/cron/send" \
-            -H "Authorization: Bearer $CRON_SECRET"
+            "${AUTH_HEADER[@]}"

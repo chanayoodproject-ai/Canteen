@@ -1,17 +1,27 @@
 import { MEAL_MAP, type MealKey } from "@/lib/meals";
-import { bangkokNow, hasTimeArrived } from "@/lib/time";
+import { bangkokNow, hasTimeArrived, timeToMinutes, type BangkokNow } from "@/lib/time";
 import { pushFlex } from "@/lib/server/line";
 import { resolveLineTarget } from "@/lib/server/line-targets";
 import { lineConfigured, maskTarget } from "@/lib/server/supabase";
 import { dishOn, store } from "@/lib/server/store";
 
 const STALE_CLAIM_MS = 5 * 60 * 1000;
+const AUTO_SEND_WINDOW_MINUTES = 20;
+
+function isWithinAutoSendWindow(now: BangkokNow, sendTime: string) {
+  const start = timeToMinutes(sendTime);
+  const nowMin = now.hour * 60 + now.minute;
+  const end = Math.min(start + AUTO_SEND_WINDOW_MINUTES, 24 * 60);
+  return nowMin >= start && nowMin < end;
+}
+
 
 export async function runSend(options: {
   onlyMeal?: MealKey;
   date?: string;
   force?: boolean;
   test?: boolean;
+  dryRun?: boolean;
 }) {
   const now = bangkokNow();
   const date = options.date ?? now.iso;
@@ -33,6 +43,10 @@ export async function runSend(options: {
     }
     if (!options.force && !options.test && !hasTimeArrived(now, setting.sendTime)) {
       results.push({ meal: setting.meal, status: "skipped", detail: `ยังไม่ถึง ${setting.sendTime}` });
+      continue;
+    }
+    if (!options.force && !options.test && !isWithinAutoSendWindow(now, setting.sendTime)) {
+      results.push({ meal: setting.meal, status: "skipped", detail: `เลยช่วงส่ง ${setting.sendTime} แล้ว` });
       continue;
     }
     if (!dishText.trim()) {
@@ -57,9 +71,23 @@ export async function runSend(options: {
       continue;
     }
 
-    const sent = await store.latestLog(date, setting.meal, ["sent"]);
-    if (sent) {
-      results.push({ meal: setting.meal, status: "skipped", detail: "ส่งมื้อนี้ไปแล้ววันนี้" });
+    const already = await store.latestLog(date, setting.meal, ["sent", "claimed"]);
+    if (already) {
+      results.push({
+        meal: setting.meal,
+        status: "skipped",
+        detail: already.status === "claimed" ? "มีงานส่งมื้อนี้อยู่แล้ว" : "ส่งมื้อนี้ไปแล้ววันนี้",
+      });
+      continue;
+    }
+
+    if (options.dryRun) {
+      const ready = await lineConfigured();
+      results.push({
+        meal: setting.meal,
+        status: ready ? "would_send" : "would_simulate",
+        detail: ready ? `จะส่ง${label}เข้ากลุ่ม` : "ยังไม่ได้ตั้งค่า LINE จึงจะบันทึกเป็นการจำลอง",
+      });
       continue;
     }
 
