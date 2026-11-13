@@ -1,5 +1,6 @@
 "use client";
 
+import { fetchJson } from "@/lib/fetch-json";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -17,8 +18,7 @@ export default function SchedulePage() {
   const [saving, setSaving] = useState(false);
 
   async function load() {
-    const response = await fetch("/api/schedule", { cache: "no-store" });
-    const body = await response.json();
+    const { response, body } = await fetchJson("/api/schedule", { cache: "no-store" });
     if (!response.ok) {
       setError(body.error || "โหลดเวลาส่งไม่สำเร็จ");
       return;
@@ -38,12 +38,11 @@ export default function SchedulePage() {
 
   async function save() {
     setSaving(true);
-    const response = await fetch("/api/schedule", {
+    const { response, body } = await fetchJson("/api/schedule", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ settings }),
     });
-    const body = await response.json();
     setSaving(false);
     if (!response.ok) {
       toast.error(body.error || "บันทึกไม่สำเร็จ");
@@ -53,12 +52,11 @@ export default function SchedulePage() {
   }
 
   async function send(meal: MealKey, mode: "now" | "test") {
-    const response = await fetch("/api/send", {
+    const { response, body } = await fetchJson("/api/send", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ meal, mode }),
     });
-    const body = await response.json();
     if (!response.ok) {
       toast.error(body.error || "ส่งไม่สำเร็จ");
       return;

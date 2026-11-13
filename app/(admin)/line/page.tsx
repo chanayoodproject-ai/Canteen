@@ -1,5 +1,6 @@
 "use client";
 
+import { fetchJson } from "@/lib/fetch-json";
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
@@ -22,8 +23,7 @@ export default function LinePage() {
   const [error, setError] = useState("");
 
   async function load() {
-    const response = await fetch("/api/line/status", { cache: "no-store" });
-    const body = await response.json();
+    const { response, body } = await fetchJson("/api/line/status", { cache: "no-store" });
     if (!response.ok) {
       setError(body.error || "ตรวจสถานะ LINE ไม่สำเร็จ");
       return;
@@ -40,12 +40,11 @@ export default function LinePage() {
   }, []);
 
   async function testSend() {
-    const response = await fetch("/api/send", {
+    const { response, body } = await fetchJson("/api/send", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ meal, mode: "test" }),
     });
-    const body = await response.json();
     if (!response.ok) {
       toast.error(body.error || "ส่งทดสอบไม่สำเร็จ");
       return;

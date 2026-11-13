@@ -21,7 +21,8 @@ export async function PUT(request: Request) {
     return bad("ต้องมีเวลาส่งครบ 4 มื้อ");
   }
   for (const setting of settings) {
-    if (!isMealKey(setting.meal) || !/^\d{2}:\d{2}$/.test(setting.sendTime)) return bad("เวลาต้องเป็นรูปแบบ 06:30");
+    if (!isMealKey(setting.meal) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(String(setting.sendTime))) return bad("เวลาต้องเป็นรูปแบบ 06:30");
+    setting.enabled = setting.enabled !== false;
   }
   try {
     await store.saveSettings(settings);

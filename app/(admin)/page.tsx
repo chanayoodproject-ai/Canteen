@@ -1,5 +1,6 @@
 "use client";
 
+import { fetchJson } from "@/lib/fetch-json";
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
@@ -44,8 +45,7 @@ export default function HomePage() {
 
   async function load() {
     setError("");
-    const response = await fetch("/api/dashboard", { cache: "no-store" });
-    const body = await response.json();
+    const { response, body } = await fetchJson("/api/dashboard", { cache: "no-store" });
     if (!response.ok) {
       setError(body.error || "โหลดหน้าแรกไม่สำเร็จ");
       return;
@@ -62,12 +62,11 @@ export default function HomePage() {
 
   async function sendNow(meal: MealKey) {
     setSending(meal);
-    const response = await fetch("/api/send", {
+    const { response, body } = await fetchJson("/api/send", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ meal, mode: "now" }),
     });
-    const body = await response.json();
     setSending(null);
     if (!response.ok) {
       toast.error(body.error || "ส่งไม่สำเร็จ");
