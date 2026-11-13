@@ -16,7 +16,6 @@ function scoreButtons(input: {
   kind: "menu" | "taste";
   color: string;
 }) {
-  const label = input.kind === "menu" ? "เมนูอาหาร" : "รสชาติ";
   return {
     type: "box",
     layout: "horizontal",
@@ -32,7 +31,6 @@ function scoreButtons(input: {
         type: "postback",
         label: String(score),
         data: `k=${input.kind}&d=${input.date}&m=${input.meal}&s=${score}`,
-        displayText: `ให้คะแนน${label} ${score}/5`,
       },
     })),
   };

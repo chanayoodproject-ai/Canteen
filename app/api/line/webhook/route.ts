@@ -1,7 +1,7 @@
 import { NextResponse, after } from "next/server";
-import { parsePostback, thankYouText } from "@/lib/flex";
+import { parsePostback } from "@/lib/flex";
 import { resolveLineChannelSecret } from "@/lib/server/app-secrets";
-import { replyLine, verifyLineSignature } from "@/lib/server/line";
+import { verifyLineSignature } from "@/lib/server/line";
 import { handleMenuQuestion } from "@/lib/server/ask-menu";
 import { upsertLineTarget } from "@/lib/server/line-targets";
 import { store } from "@/lib/server/store";
@@ -50,16 +50,13 @@ async function handleEvents(events: LineEvent[]) {
     const parsed = parsePostback(event.postback.data);
     if (!parsed.ok) continue;
     const userId = event.source?.userId || "unknown";
-    const saved = await store.upsertRating({
+    await store.upsertRating({
       menuDate: parsed.date,
       meal: parsed.meal,
       lineUserId: userId,
       menuScore: parsed.kind === "menu" ? parsed.score : undefined,
       tasteScore: parsed.kind === "taste" ? parsed.score : undefined,
     });
-    if (event.replyToken) {
-      await replyLine(event.replyToken, thankYouText({ kind: parsed.kind, score: parsed.score, updated: saved.updated }));
-    }
   }
 }
 

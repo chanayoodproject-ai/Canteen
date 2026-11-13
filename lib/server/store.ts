@@ -309,8 +309,8 @@ async function sbUpsertRating(input: {
     .maybeSingle();
   if (existing.error) throw new Error(existing.error.message);
   const previous = existing.data ? mapRating(existing.data) : null;
-  const menuScore = input.menuScore ?? previous?.menuScore ?? null;
-  const tasteScore = input.tasteScore ?? previous?.tasteScore ?? null;
+  const menuScore = previous?.menuScore ?? input.menuScore ?? null;
+  const tasteScore = previous?.tasteScore ?? input.tasteScore ?? null;
   const { data, error } = await supabaseAdmin()
     .from("ratings")
     .upsert(
@@ -326,7 +326,10 @@ async function sbUpsertRating(input: {
     .select("id,menu_date,meal,line_user_id,menu_score,taste_score,updated_at")
     .single();
   if (error) throw new Error(error.message);
-  return { updated: Boolean(previous), row: mapRating(data) };
+  const row = mapRating(data);
+  const changed =
+    row.menuScore !== (previous?.menuScore ?? null) || row.tasteScore !== (previous?.tasteScore ?? null);
+  return { updated: Boolean(previous) && changed, row };
 }
 
 
@@ -507,18 +510,26 @@ async function pgUpsertRating(input: {
     limit 1
   `;
   const previous = existing[0] ? mapPgRating(existing[0]) : null;
-  const menuScore = input.menuScore ?? previous?.menuScore ?? null;
-  const tasteScore = input.tasteScore ?? previous?.tasteScore ?? null;
+  const menuScore = previous?.menuScore ?? input.menuScore ?? null;
+  const tasteScore = previous?.tasteScore ?? input.tasteScore ?? null;
   const data = await db()`
     insert into public.ratings (menu_date, meal, line_user_id, menu_score, taste_score)
     values (${input.menuDate}::date, ${input.meal}, ${input.lineUserId}, ${menuScore}, ${tasteScore})
     on conflict (menu_date, meal, line_user_id) do update set
-      menu_score = excluded.menu_score,
-      taste_score = excluded.taste_score,
-      updated_at = now()
+      menu_score = coalesce(public.ratings.menu_score, excluded.menu_score),
+      taste_score = coalesce(public.ratings.taste_score, excluded.taste_score),
+      updated_at = case
+        when public.ratings.menu_score is null and excluded.menu_score is not null
+          or public.ratings.taste_score is null and excluded.taste_score is not null
+        then now()
+        else public.ratings.updated_at
+      end
     returning id, menu_date, meal, line_user_id, menu_score, taste_score, updated_at
   `;
-  return { updated: Boolean(previous), row: mapPgRating(data[0]) };
+  const row = mapPgRating(data[0]);
+  const changed =
+    row.menuScore !== (previous?.menuScore ?? null) || row.tasteScore !== (previous?.tasteScore ?? null);
+  return { updated: Boolean(previous) && changed, row };
 }
 
 function memGetMonth(year: number, month: number) {
@@ -628,18 +639,22 @@ export const store = {
       (row) => row.menuDate === input.menuDate && row.meal === input.meal && row.lineUserId === input.lineUserId,
     );
     const previous = index >= 0 ? dbMem.ratings[index] : null;
+    const menuScore = previous?.menuScore ?? input.menuScore ?? null;
+    const tasteScore = previous?.tasteScore ?? input.tasteScore ?? null;
+    const changed =
+      menuScore !== (previous?.menuScore ?? null) || tasteScore !== (previous?.tasteScore ?? null);
     const row: RatingRow = {
       id: previous?.id ?? crypto.randomUUID(),
       menuDate: input.menuDate,
       meal: input.meal,
       lineUserId: input.lineUserId,
-      menuScore: input.menuScore ?? previous?.menuScore ?? null,
-      tasteScore: input.tasteScore ?? previous?.tasteScore ?? null,
-      updatedAt: new Date().toISOString(),
+      menuScore,
+      tasteScore,
+      updatedAt: changed ? new Date().toISOString() : previous?.updatedAt ?? new Date().toISOString(),
     };
     if (index >= 0) dbMem.ratings[index] = row;
     else dbMem.ratings.push(row);
-    return { updated: Boolean(previous), row };
+    return { updated: Boolean(previous) && changed, row };
   },
 };
 
