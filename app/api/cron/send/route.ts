@@ -53,6 +53,8 @@ async function handle(request: Request) {
         meal: item.meal,
         status: item.status,
         detail: item.detail,
+        // Masked group ids only (e.g. "Cb6…a1f"), so dryRun shows who would receive the card.
+        targets: item.targets,
       })),
     });
   } catch (error) {

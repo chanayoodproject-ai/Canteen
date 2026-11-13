@@ -27,6 +27,8 @@ export type SendLog = {
   meal: MealKey;
   status: SendStatus;
   target: string | null;
+  /** Raw LINE group/room id this log belongs to ('' = account-wide / legacy). Server-only, never shown. */
+  targetId?: string;
   detail: string | null;
   createdAt: string;
 };
@@ -137,6 +139,7 @@ function mapLog(row: {
   target: string | null;
   detail: string | null;
   created_at: string;
+  target_id?: string;
 }): SendLog {
   return {
     id: row.id,
@@ -144,6 +147,7 @@ function mapLog(row: {
     meal: asMeal(row.meal),
     status: row.status,
     target: row.target,
+    targetId: row.target_id,
     detail: row.detail,
     createdAt: row.created_at,
   };
@@ -245,13 +249,15 @@ async function sbLogs(limit: number) {
   return (data ?? []).map(mapLog);
 }
 
-async function sbLatest(menuDate: string, meal: MealKey, statuses: SendStatus[]) {
-  const { data, error } = await supabaseAdmin()
+async function sbLatest(menuDate: string, meal: MealKey, statuses: SendStatus[], targetId?: string) {
+  let query = supabaseAdmin()
     .from("send_logs")
-    .select("id,menu_date,meal,status,target,detail,created_at")
+    .select("id,menu_date,meal,status,target,target_id,detail,created_at")
     .eq("menu_date", menuDate)
     .eq("meal", meal)
-    .in("status", statuses)
+    .in("status", statuses);
+  if (targetId !== undefined) query = query.eq("target_id", targetId);
+  const { data, error } = await query
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle();
@@ -267,9 +273,10 @@ async function sbInsertLog(input: Omit<SendLog, "id" | "createdAt">) {
       meal: input.meal,
       status: input.status,
       target: input.target,
+      target_id: input.targetId ?? "",
       detail: input.detail,
     })
-    .select("id,menu_date,meal,status,target,detail,created_at")
+    .select("id,menu_date,meal,status,target,target_id,detail,created_at")
     .single();
   if (error) {
     if (error.code === "23505") return null;
@@ -427,6 +434,7 @@ function mapPgLog(row: Record<string, unknown>): SendLog {
     target: row.target == null ? null : String(row.target),
     detail: row.detail == null ? null : String(row.detail),
     created_at: asIso(row.created_at),
+    target_id: row.target_id == null ? undefined : String(row.target_id),
   });
 }
 
@@ -452,11 +460,13 @@ async function pgLogs(limit: number) {
   return data.map(mapPgLog);
 }
 
-async function pgLatest(menuDate: string, meal: MealKey, statuses: SendStatus[]) {
-  const data = await db()`
-    select id, menu_date, meal, status, target, detail, created_at
+async function pgLatest(menuDate: string, meal: MealKey, statuses: SendStatus[], targetId?: string) {
+  const sql = db();
+  const data = await sql`
+    select id, menu_date, meal, status, target, target_id, detail, created_at
     from public.send_logs
     where menu_date = ${menuDate}::date and meal = ${meal} and status = any(${statuses}::text[])
+      ${targetId === undefined ? sql`` : sql`and target_id = ${targetId}`}
     order by created_at desc
     limit 1
   `;
@@ -466,8 +476,8 @@ async function pgLatest(menuDate: string, meal: MealKey, statuses: SendStatus[])
 async function pgInsertLog(input: Omit<SendLog, "id" | "createdAt">) {
   try {
     const data = await db()`
-      insert into public.send_logs (menu_date, meal, status, target, detail)
-      values (${input.menuDate}::date, ${input.meal}, ${input.status}, ${input.target}, ${input.detail})
+      insert into public.send_logs (menu_date, meal, status, target, target_id, detail)
+      values (${input.menuDate}::date, ${input.meal}, ${input.status}, ${input.target}, ${input.targetId ?? ""}, ${input.detail})
       returning id, menu_date, meal, status, target, detail, created_at
     `;
     return mapPgLog(data[0]);
@@ -604,12 +614,19 @@ export const store = {
     if (isSupabaseJsConfigured()) return sbLogs(limit);
     return [...memory().logs].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, limit);
   },
-  async latestLog(menuDate: string, meal: MealKey, statuses: SendStatus[]) {
-    if (isDatabaseUrlConfigured()) return withDbRetry(() => pgLatest(menuDate, meal, statuses));
-    if (isSupabaseJsConfigured()) return sbLatest(menuDate, meal, statuses);
+  /** Latest log for a meal; pass targetId to look at one LINE group only. */
+  async latestLog(menuDate: string, meal: MealKey, statuses: SendStatus[], targetId?: string) {
+    if (isDatabaseUrlConfigured()) return withDbRetry(() => pgLatest(menuDate, meal, statuses, targetId));
+    if (isSupabaseJsConfigured()) return sbLatest(menuDate, meal, statuses, targetId);
     return (
       memory().logs
-        .filter((log) => log.menuDate === menuDate && log.meal === meal && statuses.includes(log.status))
+        .filter(
+          (log) =>
+            log.menuDate === menuDate &&
+            log.meal === meal &&
+            statuses.includes(log.status) &&
+            (targetId === undefined || (log.targetId ?? "") === targetId),
+        )
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0] ?? null
     );
   },
@@ -619,7 +636,11 @@ export const store = {
     const dbMem = memory();
     if (input.status === "sent" || input.status === "claimed") {
       const open = dbMem.logs.find(
-        (log) => log.menuDate === input.menuDate && log.meal === input.meal && (log.status === "sent" || log.status === "claimed"),
+        (log) =>
+          log.menuDate === input.menuDate &&
+          log.meal === input.meal &&
+          (log.targetId ?? "") === (input.targetId ?? "") &&
+          (log.status === "sent" || log.status === "claimed"),
       );
       if (open) return null;
     }

@@ -3,7 +3,7 @@ import { parsePostback } from "@/lib/flex";
 import { resolveLineChannelSecret } from "@/lib/server/app-secrets";
 import { verifyLineSignature } from "@/lib/server/line";
 import { handleMenuQuestion } from "@/lib/server/ask-menu";
-import { upsertLineTarget } from "@/lib/server/line-targets";
+import { markLineTargetInactive, upsertLineTarget } from "@/lib/server/line-targets";
 import { store } from "@/lib/server/store";
 
 export const dynamic = "force-dynamic";
@@ -26,7 +26,13 @@ type LineEvent = {
   source?: LineSource;
 };
 
-async function captureLineTarget(source: LineSource | undefined) {
+async function captureLineTarget(eventType: string | undefined, source: LineSource | undefined) {
+  const id = source?.type === "group" ? source.groupId : source?.type === "room" ? source.roomId : "";
+  // Removed from a group/room: stop automatic sends there. Any other event (join, message, …) keeps it active.
+  if (eventType === "leave") {
+    if (id) await markLineTargetInactive(id);
+    return;
+  }
   if (source?.type === "group" && source.groupId) {
     await upsertLineTarget(source.groupId, "group");
   } else if (source?.type === "room" && source.roomId) {
@@ -37,10 +43,11 @@ async function captureLineTarget(source: LineSource | undefined) {
 async function handleEvents(events: LineEvent[]) {
   for (const event of events) {
     try {
-      await captureLineTarget(event.source);
+      await captureLineTarget(event.type, event.source);
     } catch {
       // Keep processing remaining events even if target storage fails.
     }
+    if (event.type === "leave") continue;
     try {
       await handleMenuQuestion(event);
     } catch {
