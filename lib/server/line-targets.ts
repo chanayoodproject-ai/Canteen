@@ -1,35 +1,62 @@
-import { db, isDatabaseUrlConfigured } from "@/lib/server/db";
+import { db, isDatabaseUrlConfigured, withDbRetry } from "@/lib/server/db";
+import { planTargets, type TargetRow } from "@/lib/line-target-plan";
 
+/** Remember a group/room the bot is in (any event from it, including join). */
 export async function upsertLineTarget(id: string, type: "group" | "room") {
   if (!isDatabaseUrlConfigured() || !id) return;
-  const sql = db();
   try {
-    await sql`
-      INSERT INTO public.line_targets (id, type, last_seen)
-      VALUES (${id}, ${type}, now())
-      ON CONFLICT (id) DO UPDATE SET type = EXCLUDED.type, last_seen = now()
+    await db()`
+      INSERT INTO public.line_targets (id, type, last_seen, active, joined_at, left_at)
+      VALUES (${id}, ${type}, now(), true, now(), null)
+      ON CONFLICT (id) DO UPDATE SET
+        type = EXCLUDED.type,
+        last_seen = now(),
+        active = true,
+        left_at = null,
+        joined_at = CASE WHEN public.line_targets.active THEN public.line_targets.joined_at ELSE now() END
     `;
   } catch {
-    // Table is created during setup; ignore so webhook can still return quickly.
+    // Keep the webhook fast even if storage hiccups; the next event will try again.
   }
 }
 
-export async function getLatestLineTargetId() {
-  if (!isDatabaseUrlConfigured()) return "";
-  const sql = db();
+/** Stop auto-sending to a group/room (bot was removed, or LINE says it is not a member). */
+export async function markLineTargetInactive(id: string) {
+  if (!isDatabaseUrlConfigured() || !id) return;
   try {
-    const rows = await sql<{ id: string }[]>`
-      SELECT id
-      FROM public.line_targets
-      ORDER BY last_seen DESC NULLS LAST
-      LIMIT 1
+    await db()`
+      UPDATE public.line_targets SET active = false, left_at = now() WHERE id = ${id} AND active
     `;
-    return rows[0]?.id ?? "";
   } catch {
-    return "";
+    // Ignore; a later failed push will mark it again.
   }
 }
 
+async function targetRows(): Promise<TargetRow[]> {
+  if (!isDatabaseUrlConfigured()) return [];
+  try {
+    const rows = await withDbRetry(
+      () => db()<{ id: string; active: boolean }[]>`
+        SELECT id, active FROM public.line_targets ORDER BY last_seen DESC NULLS LAST
+      `,
+    );
+    return rows.map((row) => ({ id: String(row.id), active: Boolean(row.active) }));
+  } catch {
+    return [];
+  }
+}
+
+/** Every target that should get the automatic menu card. */
+export async function listSendTargets() {
+  return planTargets(process.env.LINE_TARGET_ID, await targetRows());
+}
+
+export async function countActiveTargets() {
+  if (process.env.LINE_TARGET_ID) return 1;
+  return (await targetRows()).filter((row) => row.active).length;
+}
+
+/** The single most recent active target (used for the manual test send). */
 export async function resolveLineTarget() {
-  return process.env.LINE_TARGET_ID || (await getLatestLineTargetId()) || "";
+  return (await listSendTargets())[0] ?? "";
 }

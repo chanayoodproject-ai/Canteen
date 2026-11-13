@@ -1,7 +1,8 @@
 import { MEAL_MAP, type MealKey } from "@/lib/meals";
 import { bangkokNow, hasTimeArrived, timeToMinutes, type BangkokNow } from "@/lib/time";
 import { pushFlex } from "@/lib/server/line";
-import { resolveLineTarget } from "@/lib/server/line-targets";
+import { listSendTargets, markLineTargetInactive, resolveLineTarget } from "@/lib/server/line-targets";
+import { summarizeTargets, type TargetOutcome } from "@/lib/line-target-plan";
 import { lineConfigured, maskTarget } from "@/lib/server/supabase";
 import { dishOn, store } from "@/lib/server/store";
 
@@ -28,7 +29,9 @@ export async function runSend(options: {
   const [year, month] = date.split("-").map(Number);
   const [settings, monthCells] = await Promise.all([store.getSettings(), store.getMonth(year, month)]);
   const meals = options.onlyMeal ? settings.filter((item) => item.meal === options.onlyMeal) : settings;
-  const results: { meal: MealKey; status: string; detail: string }[] = [];
+  const results: { meal: MealKey; status: string; detail: string; targets?: TargetOutcome[] }[] = [];
+  let targetsCache: string[] | null = null;
+  const sendTargets = async () => (targetsCache ??= await listSendTargets());
 
   for (const setting of meals) {
     const dishText = dishOn(monthCells, date, setting.meal);
@@ -55,12 +58,14 @@ export async function runSend(options: {
     }
 
     if (options.test) {
-      const pushed = await pushFlex({ date, meal: setting.meal, dishText });
+      const testTarget = await resolveLineTarget();
+      const pushed = await pushFlex({ date, meal: setting.meal, dishText, to: testTarget });
       await store.insertLog({
         menuDate: date,
         meal: setting.meal,
-        status: pushed.ok ? "test" : "test",
-        target: maskTarget(await resolveLineTarget()),
+        status: "test",
+        target: maskTarget(testTarget),
+        targetId: testTarget,
         detail: pushed.ok ? "ส่งทดสอบแล้ว" : pushed.simulated ? "จำลองข้อความทดสอบ เพราะยังไม่มี LINE" : pushed.error,
       });
       results.push({
@@ -71,27 +76,11 @@ export async function runSend(options: {
       continue;
     }
 
-    const already = await store.latestLog(date, setting.meal, ["sent", "claimed"]);
-    if (already) {
-      results.push({
-        meal: setting.meal,
-        status: "skipped",
-        detail: already.status === "claimed" ? "มีงานส่งมื้อนี้อยู่แล้ว" : "ส่งมื้อนี้ไปแล้ววันนี้",
-      });
-      continue;
-    }
-
-    if (options.dryRun) {
-      const ready = await lineConfigured();
-      results.push({
-        meal: setting.meal,
-        status: ready ? "would_send" : "would_simulate",
-        detail: ready ? `จะส่ง${label}เข้ากลุ่ม` : "ยังไม่ได้ตั้งค่า LINE จึงจะบันทึกเป็นการจำลอง",
-      });
-      continue;
-    }
-
     if (!(await lineConfigured())) {
+      if (options.dryRun) {
+        results.push({ meal: setting.meal, status: "would_simulate", detail: "ยังไม่ได้ตั้งค่า LINE จึงจะบันทึกเป็นการจำลอง" });
+        continue;
+      }
       const simulated = await store.latestLog(date, setting.meal, ["simulated"]);
       if (simulated && !options.force) {
         results.push({ meal: setting.meal, status: "skipped", detail: "จำลองการส่งไปแล้ว ตั้งค่า LINE แล้วกดส่งทดสอบ" });
@@ -108,50 +97,59 @@ export async function runSend(options: {
       continue;
     }
 
-    const claim = await store.insertLog({
-      menuDate: date,
-      meal: setting.meal,
-      status: "claimed",
-      target: maskTarget(await resolveLineTarget()),
-      detail: "กำลังส่ง",
-    });
-    if (!claim) {
-      const open = await store.latestLog(date, setting.meal, ["claimed", "sent"]);
-      if (open?.status === "claimed" && Date.now() - new Date(open.createdAt).getTime() > STALE_CLAIM_MS) {
-        await store.updateLog(open.id, { status: "failed", detail: "ค้างระหว่างส่ง จึงลองใหม่" });
-      } else {
-        results.push({ meal: setting.meal, status: "skipped", detail: "มีงานส่งมื้อนี้อยู่แล้ว" });
-        continue;
-      }
+    // Every active LINE group/room gets its own card; dedupe and claims are per group.
+    const outcomes: TargetOutcome[] = [];
+    for (const targetId of await sendTargets()) {
+      outcomes.push(await sendToTarget({ date, meal: setting.meal, label, dishText, targetId, dryRun: options.dryRun }));
     }
-    const claimId = claim?.id ?? (await store.latestLog(date, setting.meal, ["failed"]))?.id;
-    const pushed = await pushFlex({ date, meal: setting.meal, dishText });
-    if (!pushed.ok) {
-      if (claimId) await store.updateLog(claimId, { status: "failed", detail: pushed.error || "ส่งไม่สำเร็จ" });
-      else {
-        await store.insertLog({
-          menuDate: date,
-          meal: setting.meal,
-          status: "failed",
-          target: maskTarget(await resolveLineTarget()),
-          detail: pushed.error,
-        });
-      }
-      results.push({ meal: setting.meal, status: "failed", detail: pushed.error || "ส่งไม่สำเร็จ" });
-      continue;
-    }
-    if (claim) await store.updateLog(claim.id, { status: "sent", detail: "ส่งเข้า LINE แล้ว" });
-    else {
-      await store.insertLog({
-        menuDate: date,
-        meal: setting.meal,
-        status: "sent",
-        target: maskTarget(await resolveLineTarget()),
-        detail: "ส่งเข้า LINE แล้ว",
-      });
-    }
-    results.push({ meal: setting.meal, status: "sent", detail: "ส่งเข้า LINE แล้ว" });
+    const summary = summarizeTargets(outcomes);
+    results.push({ meal: setting.meal, ...summary, targets: outcomes });
   }
 
   return { date, bangkok: now, results };
+}
+
+async function sendToTarget(input: {
+  date: string;
+  meal: MealKey;
+  label: string;
+  dishText: string;
+  targetId: string;
+  dryRun?: boolean;
+}): Promise<TargetOutcome> {
+  const { date, meal, label, dishText, targetId } = input;
+  const masked = maskTarget(targetId);
+  const already = await store.latestLog(date, meal, ["sent", "claimed"], targetId);
+  if (already) {
+    return {
+      target: masked,
+      status: "skipped",
+      detail:
+        already.status === "claimed"
+          ? "มีงานส่งมื้อนี้อยู่แล้ว"
+          : already.detail === "ตอบคำถามในแชทแล้ว"
+            ? "กลุ่มนี้ถามเมนูไปแล้ว"
+            : "ส่งมื้อนี้ไปแล้ววันนี้",
+    };
+  }
+  if (input.dryRun) return { target: masked, status: "would_send", detail: `จะส่ง${label}เข้ากลุ่ม ${masked}` };
+
+  let claim = await store.insertLog({ menuDate: date, meal, status: "claimed", target: masked, targetId, detail: "กำลังส่ง" });
+  if (!claim) {
+    const open = await store.latestLog(date, meal, ["claimed", "sent"], targetId);
+    if (open?.status === "claimed" && Date.now() - new Date(open.createdAt).getTime() > STALE_CLAIM_MS) {
+      await store.updateLog(open.id, { status: "failed", detail: "ค้างระหว่างส่ง จึงลองใหม่" });
+      claim = await store.insertLog({ menuDate: date, meal, status: "claimed", target: masked, targetId, detail: "กำลังส่ง" });
+    }
+    if (!claim) return { target: masked, status: "skipped", detail: "มีงานส่งมื้อนี้อยู่แล้ว" };
+  }
+  const pushed = await pushFlex({ date, meal, dishText, to: targetId });
+  if (!pushed.ok) {
+    if (pushed.gone) await markLineTargetInactive(targetId);
+    const detail = pushed.gone ? "บอทไม่ได้อยู่ในกลุ่มนี้แล้ว หยุดส่งให้กลุ่มนี้" : pushed.error || "ส่งไม่สำเร็จ";
+    await store.updateLog(claim.id, { status: "failed", detail });
+    return { target: masked, status: "failed", detail };
+  }
+  await store.updateLog(claim.id, { status: "sent", detail: "ส่งเข้า LINE แล้ว" });
+  return { target: masked, status: "sent", detail: "ส่งเข้า LINE แล้ว" };
 }
