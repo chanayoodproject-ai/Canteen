@@ -1,18 +1,19 @@
 "use client";
 
+import { fetchJson } from "@/lib/fetch-json";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { UploadButton } from "@/components/upload-button";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { MEALS, MEAL_MAP, type MealKey } from "@/lib/meals";
-import { THAI_WEEKDAYS, daysInMonth, formatMonthTitle, formatThaiDate, isoFromParts, weekdayIndex } from "@/lib/time";
+import { THAI_WEEKDAYS, bangkokNow, daysInMonth, formatMonthTitle, formatThaiDate, isoFromParts, weekdayIndex } from "@/lib/time";
 
 type Cell = { day: number; meal: MealKey; dishText: string; needsReview: boolean };
 
 export default function CalendarPage() {
-  const [year, setYear] = useState(2026);
-  const [month, setMonth] = useState(11);
+  const [year, setYear] = useState(() => bangkokNow().year);
+  const [month, setMonth] = useState(() => bangkokNow().month);
   const [cells, setCells] = useState<Cell[]>([]);
   const [today, setToday] = useState("");
   const [error, setError] = useState("");
@@ -22,8 +23,7 @@ export default function CalendarPage() {
 
   async function load(nextYear = year, nextMonth = month) {
     setError("");
-    const response = await fetch(`/api/menus?year=${nextYear}&month=${nextMonth}`, { cache: "no-store" });
-    const body = await response.json();
+    const { response, body } = await fetchJson(`/api/menus?year=${nextYear}&month=${nextMonth}`, { cache: "no-store" });
     if (!response.ok) {
       setError(body.error || "โหลดปฏิทินไม่สำเร็จ");
       return;
@@ -35,15 +35,15 @@ export default function CalendarPage() {
     const params = new URLSearchParams(window.location.search);
     const queryYear = Number(params.get("year"));
     const queryMonth = Number(params.get("month"));
-    const initialYear = queryYear || 2026;
-    const initialMonth = queryMonth || 11;
+    const now = bangkokNow();
+    const validQuery = queryYear >= 2000 && queryYear <= 2100 && queryMonth >= 1 && queryMonth <= 12;
+    const initialYear = validQuery ? queryYear : now.year;
+    const initialMonth = validQuery ? queryMonth : now.month;
     const timer = window.setTimeout(() => {
       setYear(initialYear);
       setMonth(initialMonth);
       void load(initialYear, initialMonth);
-      void fetch("/api/dashboard", { cache: "no-store" })
-        .then((response) => response.json())
-        .then((body) => body.today && setToday(body.today));
+      void fetchJson("/api/dashboard", { cache: "no-store" }).then(({ body }) => body.today && setToday(body.today));
     }, 0);
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -78,7 +78,7 @@ export default function CalendarPage() {
     setSaving(true);
     for (const meal of MEALS) {
       const previous = (byDay.get(editing) ?? []).find((cell) => cell.meal === meal.key);
-      const response = await fetch("/api/menus", {
+      const { response, body } = await fetchJson("/api/menus", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -91,7 +91,6 @@ export default function CalendarPage() {
         }),
       });
       if (!response.ok) {
-        const body = await response.json();
         toast.error(body.error || "บันทึกไม่สำเร็จ");
         setSaving(false);
         return;

@@ -1,25 +1,28 @@
 "use client";
 
+import { fetchJson } from "@/lib/fetch-json";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { MEALS, type MealKey } from "@/lib/meals";
-import { THAI_MONTHS, daysInMonth, formatThaiDate } from "@/lib/time";
+import { THAI_MONTHS, daysInMonth, defaultUploadMonth, formatThaiDate } from "@/lib/time";
+import { shrinkImage } from "@/lib/resize-image";
 import { applyDrafts, blankDrafts, type DraftCell } from "@/lib/parse-menu";
 import { isoFromParts } from "@/lib/time";
 
 export default function UploadPage() {
   const router = useRouter();
-  const [year, setYear] = useState(2026);
-  const [month, setMonth] = useState(11);
+  const [year, setYear] = useState(() => defaultUploadMonth().year);
+  const [month, setMonth] = useState(() => defaultUploadMonth().month);
   const [step, setStep] = useState<"choose" | "review">("choose");
   const [cells, setCells] = useState<DraftCell[]>([]);
   const [message, setMessage] = useState("");
   const [preview, setPreview] = useState("");
   const [fileName, setFileName] = useState("");
   const [busy, setBusy] = useState(false);
+  const [busyText, setBusyText] = useState("");
   const [conflict, setConflict] = useState<number | null>(null);
 
   useEffect(() => {
@@ -39,10 +42,13 @@ export default function UploadPage() {
   }
 
   async function existingCells() {
-    const response = await fetch(`/api/menus?year=${year}&month=${month}`, { cache: "no-store" });
-    const body = await response.json();
-    if (!response.ok) return blankDrafts(year, month);
-    return (body.cells as DraftCell[]) ?? blankDrafts(year, month);
+    try {
+      const { response, body } = await fetchJson(`/api/menus?year=${year}&month=${month}`, { cache: "no-store" });
+      if (!response.ok) return blankDrafts(year, month);
+      return (body.cells as DraftCell[]) ?? blankDrafts(year, month);
+    } catch {
+      return blankDrafts(year, month);
+    }
   }
 
   async function startBlank() {
@@ -59,37 +65,61 @@ export default function UploadPage() {
   async function loadSample(path: string, name: string, type: string) {
     const response = await fetch(path);
     const blob = await response.blob();
-    await onFile(new File([blob], name, { type }));
+    await onFiles([new File([blob], name, { type })]);
   }
 
-  async function onFile(file: File) {
+  async function onFiles(selected: File[]) {
+    if (!selected.length) return;
     setBusy(true);
-    setFileName(file.name);
+    const images = selected.filter((file) => file.type.startsWith("image/") || /\.(jpe?g|png|webp|heic|heif)$/i.test(file.name));
+    const files = images.length ? images.slice(0, 4) : selected.slice(0, 1);
+    setFileName(files.map((file) => file.name).join(", "));
     if (preview) URL.revokeObjectURL(preview);
-    setPreview(file.type.startsWith("image/") ? URL.createObjectURL(file) : "");
-    const form = new FormData();
-    form.set("year", String(year));
-    form.set("month", String(month));
-    form.set("file", file);
-    const response = await fetch("/api/upload/parse", { method: "POST", body: form });
-    const body = await response.json();
-    const base = body.mode === "manual" ? await existingCells() : blankDrafts(year, month);
-    const drafts = (body.cells ?? []) as DraftCell[];
-    setCells(applyDrafts(base, drafts));
-    setMessage(body.message || (response.ok ? "ตรวจเมนูก่อนบันทึก" : "อ่านไฟล์ไม่สำเร็จ"));
-    if (!response.ok) toast.error(body.error || "อัปโหลดไม่สำเร็จ");
+    setPreview(images.length ? URL.createObjectURL(images[0]) : "");
+    let body: { mode?: string; message?: string; error?: string; cells?: DraftCell[] } = {};
+    let ok = false;
+    try {
+      setBusyText(images.length ? "กำลังเตรียมภาพ..." : "กำลังอ่านไฟล์...");
+      const prepared = images.length ? await Promise.all(files.map((file) => shrinkImage(file))) : files;
+      const form = new FormData();
+      form.set("year", String(year));
+      form.set("month", String(month));
+      for (const file of prepared) form.append("file", file);
+      if (images.length) setBusyText("AI กำลังอ่านเมนูจากภาพ อาจใช้เวลาราว 30-60 วินาที...");
+      const response = await fetch("/api/upload/parse", { method: "POST", body: form });
+      ok = response.ok;
+      body = await response.json().catch(() => ({
+        error: response.status === 413 ? "ไฟล์ใหญ่เกินไป ลองครอปเฉพาะตารางแล้วอัปโหลดใหม่" : "อ่านไฟล์ไม่สำเร็จ",
+      }));
+    } catch {
+      body = { error: "เชื่อมต่อไม่สำเร็จ ตรวจอินเทอร์เน็ตแล้วลองใหม่" };
+    }
+    const manualMode = !ok || body.mode === "manual";
+    const base = manualMode ? await existingCells() : blankDrafts(year, month);
+    setCells(applyDrafts(base, body.cells ?? []));
+    setMessage(body.message || body.error || (ok ? "ตรวจเมนูก่อนบันทึก" : "อ่านไฟล์ไม่สำเร็จ พิมพ์ในตารางด้านล่างได้เลย"));
+    if (!ok) toast.error(body.error || "อัปโหลดไม่สำเร็จ");
     setStep("review");
     setBusy(false);
+    setBusyText("");
   }
 
   async function save(confirmOverwrite = false) {
     setBusy(true);
-    const response = await fetch("/api/menus/month", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ year, month, cells, confirmOverwrite }),
-    });
-    const body = await response.json();
+    let response: Response;
+    let body: { filled?: number; error?: string } = {};
+    try {
+      response = await fetch("/api/menus/month", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ year, month, cells, confirmOverwrite }),
+      });
+      body = await response.json().catch(() => ({}));
+    } catch {
+      setBusy(false);
+      toast.error("เชื่อมต่อไม่สำเร็จ เมนูยังอยู่ในหน้านี้ ลองกดบันทึกอีกครั้ง");
+      return;
+    }
     setBusy(false);
     if (response.status === 409) {
       setConflict(body.filled || 0);
@@ -132,16 +162,19 @@ export default function UploadPage() {
             <input
               type="file"
               accept="image/*,.csv,.xlsx,.xls,text/csv"
+              multiple
               className="sr-only"
+              disabled={busy}
               onChange={(event) => {
-                const file = event.target.files?.[0];
-                if (file) void onFile(file);
+                const files = Array.from(event.target.files ?? []);
+                event.target.value = "";
+                if (files.length) void onFiles(files);
               }}
             />
             <div>
               <p className="text-2xl font-bold">วางภาพปฏิทินหรือไฟล์ตาราง</p>
-              <p className="mt-2 text-sm text-[#6B5348]">JPG, PNG, CSV, XLSX · ตัวอย่างเดือนพฤศจิกายนอยู่ด้านล่าง</p>
-              <span className="mt-4 inline-flex h-12 items-center rounded-full bg-[#06BB46] px-5 font-bold text-white">เลือกไฟล์เมนู</span>
+              <p className="mt-2 text-sm text-[#6B5348]">ภาพถ่าย/JPG/PNG (เลือกได้สูงสุด 4 ภาพ), CSV, XLSX · AI อ่านภาพให้อัตโนมัติ แล้วตรวจก่อนบันทึก</p>
+              <span className="mt-4 inline-flex h-12 items-center rounded-full bg-[#06BB46] px-5 font-bold text-white">{busy ? busyText || "กำลังอ่าน..." : "เลือกไฟล์เมนู"}</span>
             </div>
           </label>
         </section>

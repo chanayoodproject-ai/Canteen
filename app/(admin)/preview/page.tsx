@@ -1,16 +1,17 @@
 "use client";
 
+import { fetchJson } from "@/lib/fetch-json";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { FlexPreview } from "@/components/flex-preview";
 import { MEALS, type MealKey } from "@/lib/meals";
-import { formatThaiDate } from "@/lib/time";
+import { bangkokNow, formatThaiDate } from "@/lib/time";
 import { thankYouText } from "@/lib/flex";
 
 const PREVIEW_USER = "preview-admin";
 
 export default function PreviewPage() {
-  const [date, setDate] = useState("2026-11-12");
+  const [date, setDate] = useState(() => bangkokNow().iso);
   const [meal, setMeal] = useState<MealKey>("lunch");
   const [dish, setDish] = useState("");
   const [menuScore, setMenuScore] = useState<number | null>(null);
@@ -20,8 +21,7 @@ export default function PreviewPage() {
 
   async function load(nextDate = date, nextMeal = meal) {
     const [year, month, day] = nextDate.split("-").map(Number);
-    const response = await fetch(`/api/menus?year=${year}&month=${month}`, { cache: "no-store" });
-    const body = await response.json();
+    const { response, body } = await fetchJson(`/api/menus?year=${year}&month=${month}`, { cache: "no-store" });
     if (!response.ok) {
       toast.error(body.error || "โหลดเมนูไม่สำเร็จ");
       return;
@@ -30,8 +30,7 @@ export default function PreviewPage() {
       (item) => item.day === day && item.meal === nextMeal,
     );
     setDish(cell?.dishText || "");
-    const ratings = await fetch(`/api/ratings?year=${year}&month=${month}`, { cache: "no-store" });
-    const ratingBody = await ratings.json();
+    const { response: ratings, body: ratingBody } = await fetchJson(`/api/ratings?year=${year}&month=${month}`, { cache: "no-store" });
     if (ratings.ok) {
       const row = (ratingBody.days as { menuDate: string; meal: MealKey; menuAvg: number | null; tasteAvg: number | null; menuCount: number; tasteCount: number }[])
         .find((item) => item.menuDate === nextDate && item.meal === nextMeal);
@@ -42,7 +41,7 @@ export default function PreviewPage() {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const nextDate = params.get("date") || "2026-11-12";
+    const nextDate = (/^\d{4}-\d{2}-\d{2}$/.test(params.get("date") || "") ? params.get("date")! : bangkokNow().iso);
     const nextMeal = (params.get("meal") as MealKey) || "lunch";
     const timer = window.setTimeout(() => {
       setDate(nextDate);
@@ -55,12 +54,11 @@ export default function PreviewPage() {
 
   async function rate(kind: "menu" | "taste", score: number) {
     setPending(true);
-    const response = await fetch("/api/ratings", {
+    const { response, body } = await fetchJson("/api/ratings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ menuDate: date, meal, kind, score, lineUserId: PREVIEW_USER }),
     });
-    const body = await response.json();
     setPending(false);
     if (!response.ok) {
       toast.error(body.error || "บันทึกคะแนนไม่สำเร็จ");

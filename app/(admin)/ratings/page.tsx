@@ -1,18 +1,19 @@
 "use client";
 
+import { fetchJson } from "@/lib/fetch-json";
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { MEAL_MAP, type MealKey } from "@/lib/meals";
-import { THAI_MONTHS, formatMonthTitle, formatThaiDateShort } from "@/lib/time";
+import { THAI_MONTHS, bangkokNow, formatMonthTitle, formatThaiDateShort } from "@/lib/time";
 
 type Summary = { menuAvg: number | null; tasteAvg: number | null; menuCount: number; tasteCount: number; people: number };
 type MealStat = { meal: MealKey; menuAvg: number | null; tasteAvg: number | null; menuCount: number; tasteCount: number };
 type DayStat = { menuDate: string; meal: MealKey; menuAvg: number | null; menuCount: number; tasteAvg: number | null; tasteCount: number };
 
 export default function RatingsPage() {
-  const [year, setYear] = useState(2026);
-  const [month, setMonth] = useState(11);
+  const [year, setYear] = useState(() => bangkokNow().year);
+  const [month, setMonth] = useState(() => bangkokNow().month);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [byMeal, setByMeal] = useState<MealStat[]>([]);
   const [days, setDays] = useState<DayStat[]>([]);
@@ -20,8 +21,7 @@ export default function RatingsPage() {
 
   async function load(nextYear = year, nextMonth = month) {
     setError("");
-    const response = await fetch(`/api/ratings?year=${nextYear}&month=${nextMonth}`, { cache: "no-store" });
-    const body = await response.json();
+    const { response, body } = await fetchJson(`/api/ratings?year=${nextYear}&month=${nextMonth}`, { cache: "no-store" });
     if (!response.ok) {
       setError(body.error || "โหลดคะแนนไม่สำเร็จ");
       return;
@@ -32,7 +32,7 @@ export default function RatingsPage() {
   }
 
   useEffect(() => {
-    const timer = window.setTimeout(() => void load(2026, 11), 0);
+    const timer = window.setTimeout(() => void load(year, month), 0);
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
