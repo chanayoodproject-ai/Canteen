@@ -1,6 +1,18 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { isDatabaseUrlConfigured } from "@/lib/server/db";
+import { resolveLineAccessToken, resolveLineChannelSecret } from "@/lib/server/app-secrets";
+import { resolveLineTarget } from "@/lib/server/line-targets";
 
 export function isSupabaseConfigured() {
+  if (isDatabaseUrlConfigured()) return true;
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+  if (!url || !key) return false;
+  if (url.includes("YOUR_PROJECT") || key.includes("YOUR_")) return false;
+  return true;
+}
+
+export function isSupabaseJsConfigured() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
   if (!url || !key) return false;
@@ -11,7 +23,7 @@ export function isSupabaseConfigured() {
 let client: SupabaseClient | null = null;
 
 export function supabaseAdmin() {
-  if (!isSupabaseConfigured()) {
+  if (!isSupabaseJsConfigured()) {
     throw new Error("ยังไม่ได้ตั้งค่า Supabase");
   }
   if (!client) {
@@ -29,8 +41,13 @@ export function supabaseAdmin() {
   return client;
 }
 
-export function lineConfigured() {
-  return Boolean(process.env.LINE_CHANNEL_ACCESS_TOKEN && process.env.LINE_TARGET_ID);
+export async function lineConfigured() {
+  const [token, secret, target] = await Promise.all([
+    resolveLineAccessToken(),
+    resolveLineChannelSecret(),
+    resolveLineTarget(),
+  ]);
+  return Boolean(token && secret && target);
 }
 
 export function maskTarget(target = process.env.LINE_TARGET_ID || "") {

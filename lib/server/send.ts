@@ -1,6 +1,7 @@
 import { MEAL_MAP, type MealKey } from "@/lib/meals";
 import { bangkokNow, hasTimeArrived } from "@/lib/time";
 import { pushFlex } from "@/lib/server/line";
+import { resolveLineTarget } from "@/lib/server/line-targets";
 import { lineConfigured, maskTarget } from "@/lib/server/supabase";
 import { dishOn, store } from "@/lib/server/store";
 
@@ -45,7 +46,7 @@ export async function runSend(options: {
         menuDate: date,
         meal: setting.meal,
         status: pushed.ok ? "test" : "test",
-        target: maskTarget(),
+        target: maskTarget(await resolveLineTarget()),
         detail: pushed.ok ? "ส่งทดสอบแล้ว" : pushed.simulated ? "จำลองข้อความทดสอบ เพราะยังไม่มี LINE" : pushed.error,
       });
       results.push({
@@ -62,7 +63,7 @@ export async function runSend(options: {
       continue;
     }
 
-    if (!lineConfigured()) {
+    if (!(await lineConfigured())) {
       const simulated = await store.latestLog(date, setting.meal, ["simulated"]);
       if (simulated && !options.force) {
         results.push({ meal: setting.meal, status: "skipped", detail: "จำลองการส่งไปแล้ว ตั้งค่า LINE แล้วกดส่งทดสอบ" });
@@ -83,7 +84,7 @@ export async function runSend(options: {
       menuDate: date,
       meal: setting.meal,
       status: "claimed",
-      target: maskTarget(),
+      target: maskTarget(await resolveLineTarget()),
       detail: "กำลังส่ง",
     });
     if (!claim) {
@@ -104,7 +105,7 @@ export async function runSend(options: {
           menuDate: date,
           meal: setting.meal,
           status: "failed",
-          target: maskTarget(),
+          target: maskTarget(await resolveLineTarget()),
           detail: pushed.error,
         });
       }
@@ -117,7 +118,7 @@ export async function runSend(options: {
         menuDate: date,
         meal: setting.meal,
         status: "sent",
-        target: maskTarget(),
+        target: maskTarget(await resolveLineTarget()),
         detail: "ส่งเข้า LINE แล้ว",
       });
     }

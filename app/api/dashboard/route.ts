@@ -5,6 +5,8 @@ import { lineConfigured } from "@/lib/server/supabase";
 import { store } from "@/lib/server/store";
 
 export const dynamic = "force-dynamic";
+export const preferredRegion = "bom1";
+export const maxDuration = 15;
 
 export async function GET() {
   try {
@@ -50,7 +52,7 @@ export async function GET() {
       meals,
       next,
       logs,
-      lineConfigured: lineConfigured(),
+      lineConfigured: await lineConfigured(),
       supabase: store.usingSupabase(),
     });
   } catch (error) {

@@ -1,7 +1,8 @@
 import november from "@/data/november-2026.json";
 import { MEALS, MEAL_KEYS, type MealKey } from "@/lib/meals";
 import { daysInMonth, isoFromParts } from "@/lib/time";
-import { isSupabaseConfigured, supabaseAdmin } from "@/lib/server/supabase";
+import { isDatabaseUrlConfigured, db, asIsoDate, asIsoTime, asIso } from "@/lib/server/db";
+import { isSupabaseConfigured, isSupabaseJsConfigured, supabaseAdmin } from "@/lib/server/supabase";
 
 export type MenuCell = {
   year: number;
@@ -328,6 +329,198 @@ async function sbUpsertRating(input: {
   return { updated: Boolean(previous), row: mapRating(data) };
 }
 
+
+async function pgGetMonth(year: number, month: number) {
+  const rows = await db()`
+    select year, month, day, meal, dish_text, needs_review
+    from public.menus
+    where year = ${year} and month = ${month}
+  `;
+  return mergeMonth(
+    year,
+    month,
+    rows.map((row) =>
+      mapMenu({
+        year: Number(row.year),
+        month: Number(row.month),
+        day: Number(row.day),
+        meal: String(row.meal),
+        dish_text: String(row.dish_text ?? ""),
+        needs_review: Boolean(row.needs_review),
+      }),
+    ),
+  );
+}
+
+async function pgSaveMonth(year: number, month: number, cells: MenuCell[], confirmOverwrite: boolean) {
+  const existing = await pgGetMonth(year, month);
+  const filled = existing.filter((cell) => cell.dishText.trim()).length;
+  if (filled > 0 && !confirmOverwrite) return { ok: false as const, conflict: true as const, filled };
+  const rows = cells.map((cell) => ({
+    year,
+    month,
+    day: cell.day,
+    meal: cell.meal,
+    dish_text: cell.dishText,
+    needs_review: cell.needsReview,
+  }));
+  const sql = db();
+  await sql`
+    insert into public.menus ${sql(rows, "year", "month", "day", "meal", "dish_text", "needs_review")}
+    on conflict (year, month, day, meal) do update set
+      dish_text = excluded.dish_text,
+      needs_review = excluded.needs_review,
+      updated_at = now()
+  `;
+  return { ok: true as const };
+}
+
+async function pgSaveCell(cell: MenuCell) {
+  await db()`
+    insert into public.menus (year, month, day, meal, dish_text, needs_review)
+    values (${cell.year}, ${cell.month}, ${cell.day}, ${cell.meal}, ${cell.dishText}, ${cell.needsReview})
+    on conflict (year, month, day, meal) do update set
+      dish_text = excluded.dish_text,
+      needs_review = excluded.needs_review,
+      updated_at = now()
+  `;
+}
+
+async function pgSettings(): Promise<SendSetting[]> {
+  const data = await db()`select meal, send_time, enabled from public.send_settings`;
+  const map = new Map(data.map((row) => [String(row.meal), row]));
+  return MEALS.map((meal) => {
+    const row = map.get(meal.key);
+    return {
+      meal: meal.key,
+      sendTime: row ? asIsoTime(row.send_time) : meal.defaultTime,
+      enabled: row ? Boolean(row.enabled) : true,
+    };
+  });
+}
+
+async function pgSaveSettings(settings: SendSetting[]) {
+  const sql = db();
+  const rows = settings.map((setting) => ({
+    meal: setting.meal,
+    send_time: setting.sendTime,
+    enabled: setting.enabled,
+  }));
+  await sql`
+    insert into public.send_settings ${sql(rows, "meal", "send_time", "enabled")}
+    on conflict (meal) do update set
+      send_time = excluded.send_time,
+      enabled = excluded.enabled,
+      updated_at = now()
+  `;
+}
+
+function mapPgLog(row: Record<string, unknown>): SendLog {
+  return mapLog({
+    id: String(row.id),
+    menu_date: asIsoDate(row.menu_date),
+    meal: String(row.meal),
+    status: row.status as SendStatus,
+    target: row.target == null ? null : String(row.target),
+    detail: row.detail == null ? null : String(row.detail),
+    created_at: asIso(row.created_at),
+  });
+}
+
+function mapPgRating(row: Record<string, unknown>): RatingRow {
+  return mapRating({
+    id: String(row.id),
+    menu_date: asIsoDate(row.menu_date),
+    meal: String(row.meal),
+    line_user_id: String(row.line_user_id),
+    menu_score: row.menu_score == null ? null : Number(row.menu_score),
+    taste_score: row.taste_score == null ? null : Number(row.taste_score),
+    updated_at: asIso(row.updated_at),
+  });
+}
+
+async function pgLogs(limit: number) {
+  const data = await db()`
+    select id, menu_date, meal, status, target, detail, created_at
+    from public.send_logs
+    order by created_at desc
+    limit ${limit}
+  `;
+  return data.map(mapPgLog);
+}
+
+async function pgLatest(menuDate: string, meal: MealKey, statuses: SendStatus[]) {
+  const data = await db()`
+    select id, menu_date, meal, status, target, detail, created_at
+    from public.send_logs
+    where menu_date = ${menuDate}::date and meal = ${meal} and status = any(${statuses}::text[])
+    order by created_at desc
+    limit 1
+  `;
+  return data[0] ? mapPgLog(data[0]) : null;
+}
+
+async function pgInsertLog(input: Omit<SendLog, "id" | "createdAt">) {
+  try {
+    const data = await db()`
+      insert into public.send_logs (menu_date, meal, status, target, detail)
+      values (${input.menuDate}::date, ${input.meal}, ${input.status}, ${input.target}, ${input.detail})
+      returning id, menu_date, meal, status, target, detail, created_at
+    `;
+    return mapPgLog(data[0]);
+  } catch (error) {
+    if (typeof error === "object" && error && "code" in error && (error as { code: string }).code === "23505") {
+      return null;
+    }
+    throw error;
+  }
+}
+
+async function pgUpdateLog(id: string, patch: { status: SendStatus; detail: string | null }) {
+  await db()`
+    update public.send_logs
+    set status = ${patch.status}, detail = ${patch.detail}
+    where id = ${id}::uuid
+  `;
+}
+
+async function pgRatings(from: string, to: string) {
+  const data = await db()`
+    select id, menu_date, meal, line_user_id, menu_score, taste_score, updated_at
+    from public.ratings
+    where menu_date >= ${from}::date and menu_date <= ${to}::date
+  `;
+  return data.map(mapPgRating);
+}
+
+async function pgUpsertRating(input: {
+  menuDate: string;
+  meal: MealKey;
+  lineUserId: string;
+  menuScore?: number;
+  tasteScore?: number;
+}) {
+  const existing = await db()`
+    select id, menu_date, meal, line_user_id, menu_score, taste_score, updated_at
+    from public.ratings
+    where menu_date = ${input.menuDate}::date and meal = ${input.meal} and line_user_id = ${input.lineUserId}
+    limit 1
+  `;
+  const previous = existing[0] ? mapPgRating(existing[0]) : null;
+  const menuScore = input.menuScore ?? previous?.menuScore ?? null;
+  const tasteScore = input.tasteScore ?? previous?.tasteScore ?? null;
+  const data = await db()`
+    insert into public.ratings (menu_date, meal, line_user_id, menu_score, taste_score)
+    values (${input.menuDate}::date, ${input.meal}, ${input.lineUserId}, ${menuScore}, ${tasteScore})
+    on conflict (menu_date, meal, line_user_id) do update set
+      menu_score = excluded.menu_score,
+      taste_score = excluded.taste_score,
+      updated_at = now()
+    returning id, menu_date, meal, line_user_id, menu_score, taste_score, updated_at
+  `;
+  return { updated: Boolean(previous), row: mapPgRating(data[0]) };
+}
+
 function memGetMonth(year: number, month: number) {
   return mergeMonth(
     year,
@@ -348,35 +541,42 @@ function memSaveMonth(year: number, month: number, cells: MenuCell[], confirmOve
 export const store = {
   usingSupabase: isSupabaseConfigured,
   async getMonth(year: number, month: number) {
-    return isSupabaseConfigured() ? sbGetMonth(year, month) : memGetMonth(year, month);
+    if (isDatabaseUrlConfigured()) return pgGetMonth(year, month);
+    return isSupabaseJsConfigured() ? sbGetMonth(year, month) : memGetMonth(year, month);
   },
   async saveMonth(year: number, month: number, cells: MenuCell[], confirmOverwrite: boolean) {
-    return isSupabaseConfigured()
+    if (isDatabaseUrlConfigured()) return pgSaveMonth(year, month, cells, confirmOverwrite);
+    return isSupabaseJsConfigured()
       ? sbSaveMonth(year, month, cells, confirmOverwrite)
       : memSaveMonth(year, month, cells, confirmOverwrite);
   },
   async saveCell(cell: MenuCell) {
-    if (isSupabaseConfigured()) return sbSaveCell(cell);
-    const db = memory();
-    const index = db.menus.findIndex(
+    if (isDatabaseUrlConfigured()) return pgSaveCell(cell);
+    if (isSupabaseJsConfigured()) return sbSaveCell(cell);
+    const dbMem = memory();
+    const index = dbMem.menus.findIndex(
       (item) => item.year === cell.year && item.month === cell.month && item.day === cell.day && item.meal === cell.meal,
     );
-    if (index >= 0) db.menus[index] = cell;
-    else db.menus.push(cell);
+    if (index >= 0) dbMem.menus[index] = cell;
+    else dbMem.menus.push(cell);
   },
   async getSettings() {
-    return isSupabaseConfigured() ? sbSettings() : memory().settings.map((item) => ({ ...item }));
+    if (isDatabaseUrlConfigured()) return pgSettings();
+    return isSupabaseJsConfigured() ? sbSettings() : memory().settings.map((item) => ({ ...item }));
   },
   async saveSettings(settings: SendSetting[]) {
-    if (isSupabaseConfigured()) return sbSaveSettings(settings);
+    if (isDatabaseUrlConfigured()) return pgSaveSettings(settings);
+    if (isSupabaseJsConfigured()) return sbSaveSettings(settings);
     memory().settings = settings.map((item) => ({ ...item, sendTime: hhmm(item.sendTime) }));
   },
   async listLogs(limit = 40) {
-    if (isSupabaseConfigured()) return sbLogs(limit);
+    if (isDatabaseUrlConfigured()) return pgLogs(limit);
+    if (isSupabaseJsConfigured()) return sbLogs(limit);
     return [...memory().logs].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, limit);
   },
   async latestLog(menuDate: string, meal: MealKey, statuses: SendStatus[]) {
-    if (isSupabaseConfigured()) return sbLatest(menuDate, meal, statuses);
+    if (isDatabaseUrlConfigured()) return pgLatest(menuDate, meal, statuses);
+    if (isSupabaseJsConfigured()) return sbLatest(menuDate, meal, statuses);
     return (
       memory().logs
         .filter((log) => log.menuDate === menuDate && log.meal === meal && statuses.includes(log.status))
@@ -384,20 +584,22 @@ export const store = {
     );
   },
   async insertLog(input: Omit<SendLog, "id" | "createdAt">) {
-    if (isSupabaseConfigured()) return sbInsertLog(input);
-    const db = memory();
+    if (isDatabaseUrlConfigured()) return pgInsertLog(input);
+    if (isSupabaseJsConfigured()) return sbInsertLog(input);
+    const dbMem = memory();
     if (input.status === "sent" || input.status === "claimed") {
-      const open = db.logs.find(
+      const open = dbMem.logs.find(
         (log) => log.menuDate === input.menuDate && log.meal === input.meal && (log.status === "sent" || log.status === "claimed"),
       );
       if (open) return null;
     }
     const row: SendLog = { ...input, id: crypto.randomUUID(), createdAt: new Date().toISOString() };
-    db.logs.push(row);
+    dbMem.logs.push(row);
     return row;
   },
   async updateLog(id: string, patch: { status: SendStatus; detail: string | null }) {
-    if (isSupabaseConfigured()) return sbUpdateLog(id, patch);
+    if (isDatabaseUrlConfigured()) return pgUpdateLog(id, patch);
+    if (isSupabaseJsConfigured()) return sbUpdateLog(id, patch);
     const row = memory().logs.find((log) => log.id === id);
     if (row) {
       row.status = patch.status;
@@ -407,7 +609,8 @@ export const store = {
   async listRatings(year: number, month: number) {
     const from = isoFromParts(year, month, 1);
     const to = isoFromParts(year, month, daysInMonth(year, month));
-    return isSupabaseConfigured()
+    if (isDatabaseUrlConfigured()) return pgRatings(from, to);
+    return isSupabaseJsConfigured()
       ? sbRatings(from, to)
       : memory().ratings.filter((row) => row.menuDate >= from && row.menuDate <= to);
   },
@@ -418,12 +621,13 @@ export const store = {
     menuScore?: number;
     tasteScore?: number;
   }) {
-    if (isSupabaseConfigured()) return sbUpsertRating(input);
-    const db = memory();
-    const index = db.ratings.findIndex(
+    if (isDatabaseUrlConfigured()) return pgUpsertRating(input);
+    if (isSupabaseJsConfigured()) return sbUpsertRating(input);
+    const dbMem = memory();
+    const index = dbMem.ratings.findIndex(
       (row) => row.menuDate === input.menuDate && row.meal === input.meal && row.lineUserId === input.lineUserId,
     );
-    const previous = index >= 0 ? db.ratings[index] : null;
+    const previous = index >= 0 ? dbMem.ratings[index] : null;
     const row: RatingRow = {
       id: previous?.id ?? crypto.randomUUID(),
       menuDate: input.menuDate,
@@ -433,8 +637,8 @@ export const store = {
       tasteScore: input.tasteScore ?? previous?.tasteScore ?? null,
       updatedAt: new Date().toISOString(),
     };
-    if (index >= 0) db.ratings[index] = row;
-    else db.ratings.push(row);
+    if (index >= 0) dbMem.ratings[index] = row;
+    else dbMem.ratings.push(row);
     return { updated: Boolean(previous), row };
   },
 };

@@ -1,17 +1,19 @@
 import crypto from "crypto";
 import { buildFlexMessage } from "@/lib/flex";
 import type { MealKey } from "@/lib/meals";
+import { resolveLineAccessToken, resolveLineChannelSecret } from "@/lib/server/app-secrets";
+import { resolveLineTarget } from "@/lib/server/line-targets";
 import { lineConfigured, maskTarget } from "@/lib/server/supabase";
 
 export async function pushFlex(input: { date: string; meal: MealKey; dishText: string }) {
-  const token = process.env.LINE_CHANNEL_ACCESS_TOKEN || "";
-  const target = process.env.LINE_TARGET_ID || "";
+  const token = await resolveLineAccessToken();
+  const target = await resolveLineTarget();
   const base = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "");
   const message = buildFlexMessage({
     ...input,
     logoUrl: base ? `${base}/brand/logo-mark.png` : undefined,
   });
-  if (!lineConfigured()) {
+  if (!(await lineConfigured())) {
     return { ok: false as const, simulated: true, error: "ยังไม่ได้ตั้งค่า LINE", target: maskTarget(target) };
   }
   const broadcast = target === "broadcast";
@@ -33,21 +35,26 @@ export async function pushFlex(input: { date: string; meal: MealKey; dishText: s
   return { ok: true as const, simulated: false, error: null, target: maskTarget(target) };
 }
 
-export async function replyLine(replyToken: string, text: string) {
-  const token = process.env.LINE_CHANNEL_ACCESS_TOKEN || "";
-  if (!token || !replyToken) return;
-  await fetch("https://api.line.me/v2/bot/message/reply", {
+export async function replyLineMessages(replyToken: string, messages: unknown[]) {
+  const token = await resolveLineAccessToken();
+  if (!token || !replyToken || messages.length === 0) return { ok: false as const };
+  const response = await fetch("https://api.line.me/v2/bot/message/reply", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ replyToken, messages: [{ type: "text", text }] }),
+    body: JSON.stringify({ replyToken, messages }),
   });
+  return { ok: response.ok };
+}
+
+export async function replyLine(replyToken: string, text: string) {
+  await replyLineMessages(replyToken, [{ type: "text", text }]);
 }
 
 export async function lineBotInfo() {
-  const token = process.env.LINE_CHANNEL_ACCESS_TOKEN || "";
+  const token = await resolveLineAccessToken();
   if (!token) return { ok: false as const, displayName: null, error: "ยังไม่มี Channel access token" };
   const response = await fetch("https://api.line.me/v2/bot/info", {
     headers: { Authorization: `Bearer ${token}` },
@@ -59,8 +66,8 @@ export async function lineBotInfo() {
   return { ok: true as const, displayName: body.displayName || "LINE OA", error: null };
 }
 
-export function verifyLineSignature(body: string, signature: string | null) {
-  const secret = process.env.LINE_CHANNEL_SECRET || "";
+export async function verifyLineSignature(body: string, signature: string | null) {
+  const secret = await resolveLineChannelSecret();
   if (!secret || !signature) return false;
   const digest = crypto.createHmac("sha256", secret).update(body).digest("base64");
   const a = Buffer.from(digest);
