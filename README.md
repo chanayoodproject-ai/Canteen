@@ -53,9 +53,11 @@ npx supabase db reset
 | `LINE_CHANNEL_SECRET` | ตรวจลายเซ็น webhook |
 | `LINE_TARGET_ID` | รหัสผู้ใช้ กลุ่ม ห้อง หรือคำว่า `broadcast` |
 | `AI_VISION_MODEL` | ไม่บังคับ เปลี่ยนโมเดลอ่านภาพ (ค่าเริ่มต้น `google/gemini-3-flash` ผ่าน Vercel AI Gateway ใช้ OIDC อัตโนมัติบน Vercel) |
-| `AI_GATEWAY_API_KEY` / `GOOGLE_GENERATIVE_AI_API_KEY` / `OPENAI_API_KEY` | ไม่บังคับ ทางสำรองในการอ่านภาพ (ลำดับ: AI Gateway → Gemini → OpenAI) |
+| `GOOGLE_GENERATIVE_AI_API_KEY` | คีย์ Gemini ฟรีสำหรับอ่านภาพ (ทางหลัก) ใส่ใน env หรือเก็บใน `public.app_secrets` ก็ได้ |
+| `GEMINI_MODEL` / `GEMINI_THINKING` | ไม่บังคับ (ค่าเริ่มต้น `gemini-3-flash-preview`, `minimal` ถ้าโมเดลถูกปลด แอปจะหาโมเดล flash รุ่นใหม่ที่คีย์ใช้ได้เอง) |
+| `AI_GATEWAY_API_KEY` / `OPENAI_API_KEY` | ไม่บังคับ ทางสำรองในการอ่านภาพ (ลำดับ: Gemini → AI Gateway → OpenAI) |
 
-> AI Gateway บน Vercel ต้องผูกบัตรเครดิตในหน้า AI Gateway ของทีมก่อน จึงจะได้เครดิตฟรีรายเดือนและเริ่มอ่านภาพได้
+> AI Gateway บน Vercel ต้องผูกบัตรเครดิตในหน้า AI Gateway ของทีมก่อน จึงจะได้เครดิตฟรีรายเดือน ถ้ามีคีย์ Gemini แล้วไม่จำเป็น
 
 ดูแม่แบบใน `.env.example` ห้ามคอมมิตค่าจริง
 
