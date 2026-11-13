@@ -6,6 +6,10 @@ export type DraftCell = {
   meal: MealKey;
   dishText: string;
   needsReview: boolean;
+  /** Photo reading only: text before the automatic spelling fix (shown so it can be undone). */
+  originalText?: string;
+  /** Photo reading only: what the second reading saw when the two readings disagreed. */
+  altText?: string;
 };
 
 export function parseCsv(text: string): string[][] {

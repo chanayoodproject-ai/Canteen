@@ -2,6 +2,7 @@ import { generateText, jsonSchema, Output } from "ai";
 import type { GatewayProviderOptions } from "@ai-sdk/gateway";
 import { ocrToDrafts, type OcrResult } from "@/lib/parse-menu";
 import { getAppSecret } from "@/lib/server/app-secrets";
+import { buildDictionary, correctCells, mergeReadings, type DishDictionary } from "@/lib/dish-correct";
 import type { DraftCell } from "@/lib/parse-menu";
 
 // Primary vision model + fallbacks. All IDs were checked against https://ai-gateway.vercel.sh/v1/models.
@@ -52,7 +53,15 @@ const schema = jsonSchema<OcrResult>({
 export type OcrImage = { data: Uint8Array; mediaType: string };
 
 export type OcrOutcome =
-  | { ok: true; cells: DraftCell[]; model: string; detectedMonth: number; detectedYear: number }
+  | {
+      ok: true;
+      cells: DraftCell[];
+      model: string;
+      detectedMonth: number;
+      detectedYear: number;
+      /** 2 when a second independent reading was compared, else 1. */
+      reads?: number;
+    }
   | { ok: false; reason: "not_configured" | "failed"; detail: string };
 
 function gatewayAvailable() {
@@ -60,7 +69,22 @@ function gatewayAvailable() {
   return Boolean(process.env.VERCEL || process.env.VERCEL_OIDC_TOKEN || process.env.AI_GATEWAY_API_KEY);
 }
 
-export async function readMenuImages(images: OcrImage[], year: number, month: number): Promise<OcrOutcome> {
+export type ReadOptions = {
+  /** Known dish names (from saved months) used to fix spelling and to break ties between readings. */
+  dictionary?: DishDictionary;
+  /** Read the photo twice and flag cells where the readings disagree (default on). */
+  doubleRead?: boolean;
+};
+
+export async function readMenuImages(
+  images: OcrImage[],
+  year: number,
+  month: number,
+  options: ReadOptions = {},
+): Promise<OcrOutcome> {
+  const dictionary = options.dictionary ?? buildDictionary([]);
+  const finish = (outcome: OcrOutcome): OcrOutcome =>
+    outcome.ok ? { ...outcome, cells: correctCells(outcome.cells, dictionary) } : outcome;
   const errors: string[] = [];
   const startedAt = Date.now();
 
@@ -70,27 +94,33 @@ export async function readMenuImages(images: OcrImage[], year: number, month: nu
     process.env.GEMINI_API_KEY ||
     (await getAppSecret("GOOGLE_GENERATIVE_AI_API_KEY").catch(() => ""));
   if (geminiKey) {
-    const deadline = Date.now() + 105_000;
-    const tried = new Set<string>();
-    let queue = geminiModels();
-    let discovered = false;
-    while (queue.length && deadline - Date.now() > 8_000) {
-      const model = queue.shift()!;
-      if (tried.has(model)) continue;
-      tried.add(model);
-      try {
-        return await readWithGemini(geminiKey, model, images, year, month, Math.min(90_000, deadline - Date.now()));
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error(`[ocr] gemini ${model} failed:`, message);
-        errors.push(message);
-        if (error instanceof GeminiError && !error.retryWithOtherModel) break;
-        // Google retires model IDs over time; when one is gone, ask the API which flash models this key can use.
-        if (error instanceof GeminiError && error.status === 404 && !discovered) {
-          discovered = true;
-          queue = [...queue, ...(await discoverGeminiModels(geminiKey))];
-        }
-      }
+    const deadline = Date.now() + 100_000;
+    const secondAbort = new AbortController();
+    const firstRead = geminiChain(geminiKey, images, year, month, deadline, { temperature: 0, errors });
+    // The second reading samples differently, so a misread in one usually differs from the other.
+    const secondRead =
+      options.doubleRead === false
+        ? Promise.resolve(null)
+        : geminiChain(geminiKey, images, year, month, deadline, {
+            temperature: 1,
+            errors: [],
+            maxModels: 2,
+            signal: secondAbort.signal,
+          }).catch(() => null);
+    const first = await firstRead.catch(() => null);
+    // Do not let a slow second reading hold up the upload for long once the first is in.
+    const grace = setTimeout(() => secondAbort.abort(), Math.max(15_000, Date.now() - startedAt));
+    const second = await secondRead;
+    clearTimeout(grace);
+    const main = first ?? second;
+    if (main?.ok) {
+      const backup = first && second?.ok ? second : null;
+      const cells = mergeReadings(
+        correctCells(main.cells, dictionary),
+        backup ? correctCells(backup.cells, dictionary) : null,
+        dictionary,
+      );
+      return { ...main, cells, reads: backup ? 2 : 1 };
     }
   }
 
@@ -120,13 +150,13 @@ export async function readMenuImages(images: OcrImage[], year: number, month: nu
           },
         ],
       });
-      return {
+      return finish({
         ok: true,
         cells: ocrToDrafts(result.output, year, month),
         model: result.response?.modelId || model,
         detectedMonth: Number(result.output?.detectedMonth) || 0,
         detectedYear: Number(result.output?.detectedYear) || 0,
-      };
+      });
     } catch (error) {
       console.error("[ocr] gateway failed:", error instanceof Error ? error.message : error);
       if (!geminiKey) errors.push(describeGatewayError(error));
@@ -136,13 +166,52 @@ export async function readMenuImages(images: OcrImage[], year: number, month: nu
   // 3) OpenAI key, if one was ever added.
   if (process.env.OPENAI_API_KEY) {
     try {
-      return await readWithOpenAI(images, year, month);
+      return finish(await readWithOpenAI(images, year, month));
     } catch (error) {
       errors.push(error instanceof Error ? error.message : "อ่านภาพไม่สำเร็จ");
     }
   }
   if (errors.length) return { ok: false, reason: "failed", detail: errors[errors.length - 1] };
   return { ok: false, reason: "not_configured", detail: "ยังไม่ได้เปิดบริการอ่านภาพ" };
+}
+
+type ChainOptions = { temperature: number; errors: string[]; maxModels?: number; signal?: AbortSignal };
+
+/** Try Gemini models in order until one reads the photo. Throws when none could. */
+async function geminiChain(
+  key: string,
+  images: OcrImage[],
+  year: number,
+  month: number,
+  deadline: number,
+  options: ChainOptions,
+): Promise<OcrOutcome> {
+  const tried = new Set<string>();
+  let queue = geminiModels();
+  let discovered = false;
+  while (queue.length && deadline - Date.now() > 8_000 && !options.signal?.aborted) {
+    if (options.maxModels && tried.size >= options.maxModels) break;
+    const model = queue.shift()!;
+    if (tried.has(model)) continue;
+    tried.add(model);
+    try {
+      return await readWithGemini(key, model, images, year, month, Math.min(90_000, deadline - Date.now()), {
+        temperature: options.temperature,
+        signal: options.signal,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[ocr] gemini ${model} (t=${options.temperature}) failed:`, message);
+      options.errors.push(message);
+      if (error instanceof GeminiError && !error.retryWithOtherModel) break;
+      // Google retires model IDs over time; when one is gone, ask the API which flash models this key can use.
+      if (error instanceof GeminiError && error.status === 404 && !discovered) {
+        discovered = true;
+        queue = [...queue, ...(await discoverGeminiModels(key))];
+      }
+    }
+  }
+  throw new Error(options.errors[options.errors.length - 1] || "อ่านภาพไม่สำเร็จ");
 }
 
 /** Gemini models tried in order. Override the first with GEMINI_MODEL in Vercel env. */
@@ -254,6 +323,7 @@ async function readWithGemini(
   year: number,
   month: number,
   timeoutMs: number,
+  call: { temperature: number; signal?: AbortSignal } = { temperature: 0 },
   thinkingLevel: string | null = /^gemini-(3|flash)/.test(model) ? process.env.GEMINI_THINKING || "minimal" : null,
 ): Promise<OcrOutcome> {
   const startedAt = Date.now();
@@ -264,7 +334,7 @@ async function readWithGemini(
       {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: call.signal ? AbortSignal.any([AbortSignal.timeout(timeoutMs), call.signal]) : AbortSignal.timeout(timeoutMs),
         body: JSON.stringify({
           contents: [
             {
@@ -281,7 +351,7 @@ async function readWithGemini(
           ],
           generationConfig: {
             responseMimeType: "application/json",
-            temperature: 0,
+            temperature: call.temperature,
             maxOutputTokens: 32768,
             // Long "thinking" makes a month-sized table take 90s+; copying text from a photo needs very little.
             ...(thinkingLevel ? { thinkingConfig: { thinkingLevel } } : {}),
@@ -303,7 +373,7 @@ async function readWithGemini(
       const body = await response.text().catch(() => "");
       if (status === 400 && thinkingLevel && /thinking/i.test(body)) {
         // Some models reject "minimal"; retry the same model with its default thinking.
-        return readWithGemini(key, model, images, year, month, timeoutMs - (Date.now() - startedAt), null);
+        return readWithGemini(key, model, images, year, month, timeoutMs - (Date.now() - startedAt), call, null);
       }
       const keyProblem = /API_KEY|api key|PERMISSION_DENIED/i.test(body) || status !== 400;
       throw new GeminiError(

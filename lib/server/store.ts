@@ -549,8 +549,27 @@ function memSaveMonth(year: number, month: number, cells: MenuCell[], confirmOve
   return { ok: true as const };
 }
 
+/** Every saved dish text (all months), used as the spelling dictionary for photo reading. */
+async function pgKnownDishTexts() {
+  const rows = await db()`
+    select distinct dish_text from public.menus where dish_text <> '' limit 20000
+  `;
+  return rows.map((row) => String(row.dish_text ?? ""));
+}
+
+async function sbKnownDishTexts() {
+  const { data, error } = await supabaseAdmin().from("menus").select("dish_text").neq("dish_text", "").limit(20000);
+  if (error) throw new Error(error.message);
+  return [...new Set((data ?? []).map((row) => String(row.dish_text ?? "")))];
+}
+
 export const store = {
   usingSupabase: isSupabaseConfigured,
+  async knownDishTexts(): Promise<string[]> {
+    if (isDatabaseUrlConfigured()) return withDbRetry(() => pgKnownDishTexts());
+    if (isSupabaseJsConfigured()) return sbKnownDishTexts();
+    return [...new Set(memory().menus.map((cell) => cell.dishText).filter(Boolean))];
+  },
   async getMonth(year: number, month: number) {
     if (isDatabaseUrlConfigured()) return withDbRetry(() => pgGetMonth(year, month));
     return isSupabaseJsConfigured() ? sbGetMonth(year, month) : memGetMonth(year, month);
