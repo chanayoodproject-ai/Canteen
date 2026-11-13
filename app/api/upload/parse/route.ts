@@ -1,30 +1,57 @@
 import { NextResponse } from "next/server";
 import * as XLSX from "xlsx";
 import { bad } from "@/lib/server/http";
-import { MEAL_KEYS } from "@/lib/meals";
-import { daysInMonth } from "@/lib/time";
 import { parseCsv, tableToDrafts, type DraftCell } from "@/lib/parse-menu";
+import { readMenuImages, type OcrImage } from "@/lib/server/ocr";
+import { THAI_MONTHS } from "@/lib/time";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+export const preferredRegion = "bom1";
+// Reading a full month calendar with a vision model can take 20-60s.
+export const maxDuration = 120;
 
-const OCR_PROMPT = `คุณอ่านภาพปฏิทินเมนูโรงอาหารภาษาไทย
-ตอบเป็น JSON เท่านั้น รูปแบบ {"days":[{"day":1,"breakfast":"","lunch":"","dinner":"","late":"","review":[]}]}
-มื้อคือ เช้า=breakfast เที่ยง=lunch เย็น=dinner ดึก=late
-ถอดทุกวันที่อ่านได้ ห้ามแต่งเมนูที่ไม่มีในภาพ ถ้าอ่านไม่ออกให้ใส่ข้อความว่างและใส่ชื่อมื้อนั้นใน review
-รวมข้อความที่ตัดบรรทัดในช่องเดียวกันเป็นเมนูของมื้อนั้น`;
+const MAX_IMAGES = 4;
+const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
+const IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif", "image/heic", "image/heif"];
+
+function manual(message: string) {
+  return NextResponse.json({ ok: true, mode: "manual", message, cells: [] as DraftCell[] });
+}
+
+function isImage(file: File) {
+  const name = file.name.toLowerCase();
+  return file.type.startsWith("image/") || /\.(jpe?g|png|webp|gif|heic|heif)$/.test(name);
+}
+
+function imageType(file: File) {
+  if (IMAGE_TYPES.includes(file.type)) return file.type;
+  const name = file.name.toLowerCase();
+  if (name.endsWith(".png")) return "image/png";
+  if (name.endsWith(".webp")) return "image/webp";
+  if (name.endsWith(".heic") || name.endsWith(".heif")) return "image/heic";
+  return "image/jpeg";
+}
 
 export async function POST(request: Request) {
-  const form = await request.formData();
+  let form: FormData;
+  try {
+    form = await request.formData();
+  } catch {
+    return bad("อ่านไฟล์ที่ส่งมาไม่ได้ ไฟล์อาจใหญ่เกินไป ลองถ่ายภาพใหม่หรือครอปเฉพาะตาราง", 413);
+  }
   const year = Number(form.get("year"));
   const month = Number(form.get("month"));
-  const file = form.get("file");
-  if (!year || month < 1 || month > 12) return bad("ระบุเดือนและปีก่อนอัปโหลด");
-  if (!(file instanceof File)) return bad("ยังไม่ได้เลือกไฟล์");
-  const name = file.name.toLowerCase();
+  const files = form.getAll("file").filter((item): item is File => item instanceof File && item.size > 0);
+  if (!Number.isInteger(year) || year < 2000 || year > 2100 || !Number.isInteger(month) || month < 1 || month > 12) {
+    return bad("ระบุเดือนและปีก่อนอัปโหลด");
+  }
+  if (!files.length) return bad("ยังไม่ได้เลือกไฟล์");
+  const first = files[0];
+  const name = first.name.toLowerCase();
   try {
-    if (name.endsWith(".csv") || file.type.includes("csv") || name.endsWith(".txt")) {
-      const table = parseCsv(await file.text());
+    if (name.endsWith(".csv") || first.type.includes("csv") || name.endsWith(".txt")) {
+      const table = parseCsv(await first.text());
       return NextResponse.json({
         ok: true,
         mode: "file",
@@ -32,8 +59,8 @@ export async function POST(request: Request) {
         cells: tableToDrafts(table, year, month),
       });
     }
-    if (name.endsWith(".xlsx") || name.endsWith(".xls") || file.type.includes("sheet")) {
-      const book = XLSX.read(Buffer.from(await file.arrayBuffer()), { type: "buffer" });
+    if (name.endsWith(".xlsx") || name.endsWith(".xls") || first.type.includes("sheet") || first.type.includes("excel")) {
+      const book = XLSX.read(Buffer.from(await first.arrayBuffer()), { type: "buffer" });
       const sheet = book.Sheets[book.SheetNames[0]];
       const table = XLSX.utils.sheet_to_json<(string | number | null)[]>(sheet, { header: 1, raw: false });
       const rows = table.map((row) => row.map((cell) => String(cell ?? "").trim()));
@@ -44,65 +71,43 @@ export async function POST(request: Request) {
         cells: tableToDrafts(rows, year, month),
       });
     }
-    if (!file.type.startsWith("image/")) return bad("รองรับภาพปฏิทิน, CSV หรือ XLSX");
-    const ocr = await readImage(file, year, month);
-    if (!ocr) {
-      return NextResponse.json({
-        ok: true,
-        mode: "manual",
-        message: "ยังอ่านภาพอัตโนมัติไม่ได้ เพราะไม่มี OPENAI_API_KEY เปิดรูปคู่กับตารางแล้วพิมพ์แก้ได้ทันที หรืออัปโหลด CSV/XLSX",
-        cells: [] as DraftCell[],
-      });
+    const images = files.filter(isImage).slice(0, MAX_IMAGES);
+    if (!images.length) return bad("รองรับภาพปฏิทิน (JPG, PNG), CSV หรือ XLSX");
+    if (images.some((file) => file.size > MAX_IMAGE_BYTES)) {
+      return manual("ภาพใหญ่เกินไป ลองครอปเฉพาะตารางเมนูแล้วอัปโหลดใหม่ หรือพิมพ์ในตารางด้านล่างได้เลย");
     }
-    return NextResponse.json({ ok: true, mode: "ocr", message: "อ่านภาพแล้ว โปรดตรวจทุกวันก่อนบันทึก", cells: ocr });
-  } catch (error) {
+    const payload: OcrImage[] = await Promise.all(
+      images.map(async (file) => ({ data: new Uint8Array(await file.arrayBuffer()), mediaType: imageType(file) })),
+    );
+    const ocr = await readMenuImages(payload, year, month);
+    if (!ocr.ok) {
+      return manual(
+        ocr.reason === "not_configured"
+          ? "ยังอ่านภาพอัตโนมัติไม่ได้ เปิดรูปคู่กับตารางแล้วพิมพ์แก้ได้ทันที หรืออัปโหลด CSV/XLSX"
+          : `อ่านภาพอัตโนมัติไม่สำเร็จ (${ocr.detail}) พิมพ์เมนูในตารางด้านล่างได้เลย หรือลองอัปโหลดใหม่`,
+      );
+    }
+    const filled = ocr.cells.filter((cell) => cell.dishText).length;
+    if (!filled) {
+      return manual("อ่านภาพแล้วแต่ไม่พบเมนู ลองใช้ภาพที่ชัดขึ้นหรือครอปเฉพาะตาราง หรือพิมพ์ในตารางด้านล่างได้เลย");
+    }
+    const days = new Set(ocr.cells.map((cell) => cell.day)).size;
+    const review = ocr.cells.filter((cell) => cell.needsReview).length;
+    const mismatch =
+      (ocr.detectedMonth && ocr.detectedMonth !== month) || (ocr.detectedYear && ocr.detectedYear !== year)
+        ? ` ⚠️ ภาพนี้น่าจะเป็นเดือน${THAI_MONTHS[(ocr.detectedMonth || month) - 1]} ${(ocr.detectedYear || year) + 543} แต่เลือก${THAI_MONTHS[month - 1]} ${year + 543} ไว้ ตรวจเดือนก่อนบันทึก`
+        : "";
     return NextResponse.json({
       ok: true,
-      mode: "manual",
-      message: error instanceof Error ? `อ่านไฟล์ไม่สำเร็จ: ${error.message} กรอกในตารางได้เลย` : "อ่านไฟล์ไม่สำเร็จ กรอกในตารางได้เลย",
-      cells: [],
+      mode: "ocr",
+      model: ocr.model,
+      detectedMonth: ocr.detectedMonth,
+      detectedYear: ocr.detectedYear,
+      message: `อ่านภาพแล้ว ได้ ${days} วัน ${filled} มื้อ${review ? ` (มี ${review} ช่องที่ควรตรวจ)` : ""} โปรดตรวจทุกวันก่อนบันทึก${mismatch}`,
+      cells: ocr.cells,
     });
+  } catch (error) {
+    console.error("[upload/parse]", error instanceof Error ? error.message : error);
+    return manual("อ่านไฟล์ไม่สำเร็จ พิมพ์เมนูในตารางด้านล่างได้เลย หรือลองอัปโหลดใหม่");
   }
-}
-
-async function readImage(file: File, year: number, month: number): Promise<DraftCell[] | null> {
-  const key = process.env.OPENAI_API_KEY;
-  if (!key) return null;
-  const mime = file.type || "image/jpeg";
-  const base64 = Buffer.from(await file.arrayBuffer()).toString("base64");
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: process.env.OPENAI_VISION_MODEL || "gpt-4o-mini",
-      response_format: { type: "json_object" },
-      messages: [
-        {
-          role: "user",
-          content: [
-            { type: "text", text: OCR_PROMPT },
-            { type: "image_url", image_url: { url: `data:${mime};base64,${base64}` } },
-          ],
-        },
-      ],
-    }),
-  });
-  if (!response.ok) throw new Error("บริการอ่านภาพตอบกลับไม่สำเร็จ");
-  const payload = (await response.json()) as { choices?: { message?: { content?: string } }[] };
-  const content = payload.choices?.[0]?.message?.content || "{}";
-  const parsed = JSON.parse(content) as {
-    days?: { day: number; breakfast?: string; lunch?: string; dinner?: string; late?: string; review?: string[] }[];
-  };
-  const limit = daysInMonth(year, month);
-  const cells: DraftCell[] = [];
-  for (const day of parsed.days ?? []) {
-    if (day.day < 1 || day.day > limit) continue;
-    const review = new Set(day.review ?? []);
-    for (const meal of MEAL_KEYS) {
-      const dishText = String(day[meal] ?? "").trim();
-      if (!dishText && !review.has(meal)) continue;
-      cells.push({ day: day.day, meal, dishText, needsReview: review.has(meal) || !dishText });
-    }
-  }
-  return cells;
 }
