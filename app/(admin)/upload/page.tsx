@@ -24,6 +24,7 @@ export default function UploadPage() {
   const [busy, setBusy] = useState(false);
   const [busyText, setBusyText] = useState("");
   const [conflict, setConflict] = useState<number | null>(null);
+  const [onlyFlagged, setOnlyFlagged] = useState(false);
 
   useEffect(() => {
     return () => {
@@ -40,6 +41,12 @@ export default function UploadPage() {
       current.map((cell) => (cell.day === day && cell.meal === meal ? { ...cell, dishText, needsReview: false } : cell)),
     );
   }
+
+  function patchCell(day: number, meal: MealKey, patch: Partial<DraftCell>) {
+    setCells((current) => current.map((cell) => (cell.day === day && cell.meal === meal ? { ...cell, ...patch } : cell)));
+  }
+
+  const isFlagged = (cell?: DraftCell) => Boolean(cell && (cell.needsReview || cell.altText !== undefined || cell.originalText));
 
   async function existingCells() {
     try {
@@ -99,6 +106,7 @@ export default function UploadPage() {
     setCells(applyDrafts(base, body.cells ?? []));
     setMessage(body.message || body.error || (ok ? "ตรวจเมนูก่อนบันทึก" : "อ่านไฟล์ไม่สำเร็จ พิมพ์ในตารางด้านล่างได้เลย"));
     if (!ok) toast.error(body.error || "อัปโหลดไม่สำเร็จ");
+    setOnlyFlagged(false);
     setStep("review");
     setBusy(false);
     setBusyText("");
@@ -134,6 +142,10 @@ export default function UploadPage() {
   }
 
   const total = daysInMonth(year, month);
+  const flaggedCount = cells.filter(isFlagged).length;
+  const visibleDays = Array.from({ length: total }, (_, index) => index + 1).filter(
+    (day) => !onlyFlagged || cells.some((cell) => cell.day === day && isFlagged(cell)),
+  );
 
   return (
     <div className="space-y-5">
@@ -197,7 +209,20 @@ export default function UploadPage() {
           <div className="rounded-3xl bg-[#FFF4D6] p-4 text-sm leading-6 text-[#6A4B12]">
             <p className="font-semibold">{fileName || "กรอกเอง"} · {THAI_MONTHS[month - 1]} {year + 543}</p>
             <p>{message}</p>
-            <button type="button" className="mt-2 underline" onClick={() => setStep("choose")}>เลือกไฟล์ใหม่</button>
+            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-2">
+              <button type="button" className="underline" onClick={() => setStep("choose")}>เลือกไฟล์ใหม่</button>
+              {flaggedCount > 0 && (
+                <button type="button" className="font-semibold underline" onClick={() => setOnlyFlagged((value) => !value)}>
+                  {onlyFlagged ? "แสดงทุกวัน" : `ดูเฉพาะช่องที่ควรตรวจ (${flaggedCount})`}
+                </button>
+              )}
+            </div>
+            {flaggedCount > 0 && (
+              <p className="mt-2 text-xs text-[#8A5A1A]">
+                <span className="mr-1 inline-block h-2.5 w-2.5 rounded-full bg-[#F08A24] align-middle" />สีส้ม = อ่าน 2 รอบได้ไม่ตรงกันหรือควรตรวจ
+                <span className="ml-3 mr-1 inline-block h-2.5 w-2.5 rounded-full bg-[#3B82F6] align-middle" />สีฟ้า = แก้คำสะกดให้อัตโนมัติ
+              </p>
+            )}
           </div>
           <div className="grid items-start gap-4 lg:grid-cols-[280px_1fr]">
             {preview && (
@@ -205,22 +230,71 @@ export default function UploadPage() {
               <img src={preview} alt="ภาพปฏิทินที่อัปโหลด" className="max-h-72 w-full rounded-3xl bg-white object-contain p-2 shadow lg:sticky lg:top-24 lg:max-h-none" />
             )}
             <div className="space-y-3">
-              {Array.from({ length: total }, (_, index) => index + 1).map((day) => (
+              {visibleDays.map((day) => (
                 <article key={day} className="rounded-3xl bg-white p-4">
                   <h2 className="font-bold">{formatThaiDate(isoFromParts(year, month, day))}</h2>
                   <div className="mt-3 grid gap-3 md:grid-cols-2">
                     {MEALS.map((meal) => {
                       const current = cells.find((cell) => cell.day === day && cell.meal === meal.key);
+                      if (onlyFlagged && !isFlagged(current)) return null;
+                      const disagree = current?.altText !== undefined;
+                      // Typing in a cell or picking a reading marks it as checked; the notes stay so it can be changed back.
+                      const warn = Boolean(current?.needsReview);
+                      const fixed = Boolean(current?.originalText);
                       return (
-                        <label key={meal.key} className="block text-sm font-semibold" style={{ color: meal.ink }}>
-                          {meal.full}{current?.needsReview ? " · ควรตรวจ" : ""}
-                          <textarea
-                            value={cellText(day, meal.key)}
-                            onChange={(event) => updateCell(day, meal.key, event.target.value)}
-                            rows={2}
-                            className="mt-1 w-full rounded-2xl border border-[#E4D3C4] p-3 text-base font-normal text-[#2C1810]"
-                          />
-                        </label>
+                        <div key={meal.key} className="text-sm">
+                          <label className="block font-semibold" style={{ color: meal.ink }}>
+                            {meal.full}
+                            {warn ? (disagree ? " · อ่าน 2 รอบไม่ตรงกัน" : " · ควรตรวจ") : disagree ? " · เลือกแล้ว" : fixed ? " · แก้คำสะกดแล้ว" : ""}
+                            <textarea
+                              value={cellText(day, meal.key)}
+                              onChange={(event) => updateCell(day, meal.key, event.target.value)}
+                              rows={2}
+                              className={`mt-1 w-full rounded-2xl border p-3 text-base font-normal text-[#2C1810] ${
+                                warn
+                                  ? "border-2 border-[#F08A24] bg-[#FFF4E8]"
+                                                : fixed
+                                    ? "border-2 border-[#93C5FD] bg-[#F3F8FF]"
+                                    : "border-[#E4D3C4]"
+                              }`}
+                            />
+                          </label>
+                          {disagree && current && (
+                            <p className="mt-1 rounded-xl bg-[#FFF4E8] px-3 py-2 text-xs leading-5 text-[#8A4B0F]">
+                              อีกรอบอ่านได้: {current.altText ? `“${current.altText}”` : "(ว่าง)"}
+                              {current.altText ? (
+                                <button
+                                  type="button"
+                                  className="ml-2 font-semibold underline"
+                                  onClick={() =>
+                                    patchCell(day, meal.key, {
+                                      dishText: current.altText ?? "",
+                                      altText: current.dishText,
+                                      originalText: undefined,
+                                      needsReview: false,
+                                    })
+                                  }
+                                >
+                                  ใช้แบบนี้
+                                </button>
+                              ) : null}
+                            </p>
+                          )}
+                          {fixed && current && (
+                            <p className="mt-1 rounded-xl bg-[#F3F8FF] px-3 py-2 text-xs leading-5 text-[#1E4E8C]">
+                              แก้คำสะกดอัตโนมัติ จาก “{current.originalText}”
+                              <button
+                                type="button"
+                                className="ml-2 font-semibold underline"
+                                onClick={() =>
+                                  patchCell(day, meal.key, { dishText: current.originalText ?? "", originalText: undefined, needsReview: false })
+                                }
+                              >
+                                ใช้คำเดิม
+                              </button>
+                            </p>
+                          )}
+                        </div>
                       );
                     })}
                   </div>

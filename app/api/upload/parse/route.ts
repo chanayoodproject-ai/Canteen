@@ -3,6 +3,8 @@ import * as XLSX from "xlsx";
 import { bad } from "@/lib/server/http";
 import { parseCsv, tableToDrafts, type DraftCell } from "@/lib/parse-menu";
 import { readMenuImages, type OcrImage } from "@/lib/server/ocr";
+import { buildDictionary } from "@/lib/dish-correct";
+import { store } from "@/lib/server/store";
 import { THAI_MONTHS } from "@/lib/time";
 
 export const dynamic = "force-dynamic";
@@ -79,7 +81,12 @@ export async function POST(request: Request) {
     const payload: OcrImage[] = await Promise.all(
       images.map(async (file) => ({ data: new Uint8Array(await file.arrayBuffer()), mediaType: imageType(file) })),
     );
-    const ocr = await readMenuImages(payload, year, month);
+    // Dishes saved in earlier months teach the spelling fixer; it grows every time a month is saved.
+    const known = await store.knownDishTexts().catch((error) => {
+      console.error("[upload/parse] dictionary", error instanceof Error ? error.message : error);
+      return [] as string[];
+    });
+    const ocr = await readMenuImages(payload, year, month, { dictionary: buildDictionary(known) });
     if (!ocr.ok) {
       return manual(
         ocr.reason === "not_configured"
@@ -93,6 +100,18 @@ export async function POST(request: Request) {
     }
     const days = new Set(ocr.cells.map((cell) => cell.day)).size;
     const review = ocr.cells.filter((cell) => cell.needsReview).length;
+    const fixed = ocr.cells.filter((cell) => cell.originalText).length;
+    const disagree = ocr.cells.filter((cell) => cell.altText !== undefined).length;
+    const checks = [
+      ocr.reads === 2
+        ? disagree
+          ? `อ่าน 2 รอบ ไม่ตรงกัน ${disagree} ช่อง (ไฮไลต์สีส้ม)`
+          : "อ่าน 2 รอบ ตรงกันทุกช่อง"
+        : "อ่านได้รอบเดียว",
+      fixed ? `แก้คำสะกดอัตโนมัติ ${fixed} ช่อง (กดใช้คำเดิมได้)` : "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
     const mismatch =
       (ocr.detectedMonth && ocr.detectedMonth !== month) || (ocr.detectedYear && ocr.detectedYear !== year)
         ? ` ⚠️ ภาพนี้น่าจะเป็นเดือน${THAI_MONTHS[(ocr.detectedMonth || month) - 1]} ${(ocr.detectedYear || year) + 543} แต่เลือก${THAI_MONTHS[month - 1]} ${year + 543} ไว้ ตรวจเดือนก่อนบันทึก`
@@ -103,7 +122,10 @@ export async function POST(request: Request) {
       model: ocr.model,
       detectedMonth: ocr.detectedMonth,
       detectedYear: ocr.detectedYear,
-      message: `อ่านภาพแล้ว ได้ ${days} วัน ${filled} มื้อ${review ? ` (มี ${review} ช่องที่ควรตรวจ)` : ""} โปรดตรวจทุกวันก่อนบันทึก${mismatch}`,
+      message: `อ่านภาพแล้ว ได้ ${days} วัน ${filled} มื้อ · ${checks}${review ? ` · ควรตรวจ ${review} ช่อง` : ""} โปรดตรวจก่อนบันทึก${mismatch}`,
+      reads: ocr.reads ?? 1,
+      fixed,
+      disagree,
       cells: ocr.cells,
     });
   } catch (error) {
