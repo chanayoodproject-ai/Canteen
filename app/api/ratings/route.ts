@@ -12,7 +12,8 @@ export async function GET(request: Request) {
   const month = Number(url.searchParams.get("month"));
   if (!year || month < 1 || month > 12) return bad("ระบุปีและเดือน");
   try {
-    const rows = await store.listRatings(year, month);
+    // Ratings tapped on the in-app preview page are for testing only; keep them out of the stats.
+    const rows = (await store.listRatings(year, month)).filter((row) => row.lineUserId !== "preview-admin");
     const totalDays = daysInMonth(year, month);
     const groups = new Map<string, { menu: number[]; taste: number[] }>();
     for (let day = 1; day <= totalDays; day += 1) {
