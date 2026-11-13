@@ -173,3 +173,13 @@ export function nextSend(input: {
   }
   return null;
 }
+
+export function shiftMonth(year: number, month: number, delta: number) {
+  const index = year * 12 + (month - 1) + delta;
+  return { year: Math.floor(index / 12), month: (index % 12) + 1 };
+}
+
+/** Month to preselect on the upload page: next month from the 15th onward (menus are prepared ahead). */
+export function defaultUploadMonth(now: BangkokNow = bangkokNow()) {
+  return now.day >= 15 ? shiftMonth(now.year, now.month, 1) : { year: now.year, month: now.month };
+}

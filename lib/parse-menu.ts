@@ -100,3 +100,48 @@ export function applyDrafts(base: DraftCell[], drafts: DraftCell[]) {
   }
   return [...map.values()].sort((a, b) => a.day - b.day || MEAL_KEYS.indexOf(a.meal) - MEAL_KEYS.indexOf(b.meal));
 }
+
+export type OcrDay = {
+  day: number;
+  breakfast?: string;
+  lunch?: string;
+  dinner?: string;
+  late?: string;
+  review?: string[];
+};
+
+export type OcrResult = {
+  detectedMonth?: number;
+  detectedYear?: number;
+  days?: OcrDay[];
+};
+
+const MEAL_PREFIX = /^\s*(มื้อ)?(เช้า|เที่ยง|กลางวัน|เย็น|ดึก)\s*[:：]\s*/;
+
+export function cleanDishText(value: unknown) {
+  return String(value ?? "")
+    .replace(MEAL_PREFIX, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 500);
+}
+
+/** Convert model output to draft cells, dropping days outside the month and merging duplicate days. */
+export function ocrToDrafts(parsed: OcrResult | null | undefined, year: number, month: number): DraftCell[] {
+  const limit = daysInMonth(year, month);
+  const map = new Map<string, DraftCell>();
+  for (const day of parsed?.days ?? []) {
+    const dayNumber = Number(day?.day);
+    if (!Number.isInteger(dayNumber) || dayNumber < 1 || dayNumber > limit) continue;
+    const review = new Set(Array.isArray(day.review) ? day.review : []);
+    for (const meal of MEAL_KEYS) {
+      const dishText = cleanDishText(day[meal]);
+      const key = `${dayNumber}:${meal}`;
+      const previous = map.get(key);
+      if (!dishText && !review.has(meal)) continue;
+      if (previous?.dishText && !dishText) continue;
+      map.set(key, { day: dayNumber, meal, dishText, needsReview: review.has(meal) || !dishText });
+    }
+  }
+  return [...map.values()].sort((a, b) => a.day - b.day || MEAL_KEYS.indexOf(a.meal) - MEAL_KEYS.indexOf(b.meal));
+}

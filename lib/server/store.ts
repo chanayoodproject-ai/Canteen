@@ -1,7 +1,7 @@
 import november from "@/data/november-2026.json";
 import { MEALS, MEAL_KEYS, type MealKey } from "@/lib/meals";
 import { daysInMonth, isoFromParts } from "@/lib/time";
-import { isDatabaseUrlConfigured, db, asIsoDate, asIsoTime, asIso } from "@/lib/server/db";
+import { isDatabaseUrlConfigured, db, asIsoDate, asIsoTime, asIso, withDbRetry } from "@/lib/server/db";
 import { isSupabaseConfigured, isSupabaseJsConfigured, supabaseAdmin } from "@/lib/server/supabase";
 
 export type MenuCell = {
@@ -552,17 +552,17 @@ function memSaveMonth(year: number, month: number, cells: MenuCell[], confirmOve
 export const store = {
   usingSupabase: isSupabaseConfigured,
   async getMonth(year: number, month: number) {
-    if (isDatabaseUrlConfigured()) return pgGetMonth(year, month);
+    if (isDatabaseUrlConfigured()) return withDbRetry(() => pgGetMonth(year, month));
     return isSupabaseJsConfigured() ? sbGetMonth(year, month) : memGetMonth(year, month);
   },
   async saveMonth(year: number, month: number, cells: MenuCell[], confirmOverwrite: boolean) {
-    if (isDatabaseUrlConfigured()) return pgSaveMonth(year, month, cells, confirmOverwrite);
+    if (isDatabaseUrlConfigured()) return withDbRetry(() => pgSaveMonth(year, month, cells, confirmOverwrite));
     return isSupabaseJsConfigured()
       ? sbSaveMonth(year, month, cells, confirmOverwrite)
       : memSaveMonth(year, month, cells, confirmOverwrite);
   },
   async saveCell(cell: MenuCell) {
-    if (isDatabaseUrlConfigured()) return pgSaveCell(cell);
+    if (isDatabaseUrlConfigured()) return withDbRetry(() => pgSaveCell(cell));
     if (isSupabaseJsConfigured()) return sbSaveCell(cell);
     const dbMem = memory();
     const index = dbMem.menus.findIndex(
@@ -572,21 +572,21 @@ export const store = {
     else dbMem.menus.push(cell);
   },
   async getSettings() {
-    if (isDatabaseUrlConfigured()) return pgSettings();
+    if (isDatabaseUrlConfigured()) return withDbRetry(() => pgSettings());
     return isSupabaseJsConfigured() ? sbSettings() : memory().settings.map((item) => ({ ...item }));
   },
   async saveSettings(settings: SendSetting[]) {
-    if (isDatabaseUrlConfigured()) return pgSaveSettings(settings);
+    if (isDatabaseUrlConfigured()) return withDbRetry(() => pgSaveSettings(settings));
     if (isSupabaseJsConfigured()) return sbSaveSettings(settings);
     memory().settings = settings.map((item) => ({ ...item, sendTime: hhmm(item.sendTime) }));
   },
   async listLogs(limit = 40) {
-    if (isDatabaseUrlConfigured()) return pgLogs(limit);
+    if (isDatabaseUrlConfigured()) return withDbRetry(() => pgLogs(limit));
     if (isSupabaseJsConfigured()) return sbLogs(limit);
     return [...memory().logs].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, limit);
   },
   async latestLog(menuDate: string, meal: MealKey, statuses: SendStatus[]) {
-    if (isDatabaseUrlConfigured()) return pgLatest(menuDate, meal, statuses);
+    if (isDatabaseUrlConfigured()) return withDbRetry(() => pgLatest(menuDate, meal, statuses));
     if (isSupabaseJsConfigured()) return sbLatest(menuDate, meal, statuses);
     return (
       memory().logs
@@ -620,7 +620,7 @@ export const store = {
   async listRatings(year: number, month: number) {
     const from = isoFromParts(year, month, 1);
     const to = isoFromParts(year, month, daysInMonth(year, month));
-    if (isDatabaseUrlConfigured()) return pgRatings(from, to);
+    if (isDatabaseUrlConfigured()) return withDbRetry(() => pgRatings(from, to));
     return isSupabaseJsConfigured()
       ? sbRatings(from, to)
       : memory().ratings.filter((row) => row.menuDate >= from && row.menuDate <= to);
@@ -632,7 +632,7 @@ export const store = {
     menuScore?: number;
     tasteScore?: number;
   }) {
-    if (isDatabaseUrlConfigured()) return pgUpsertRating(input);
+    if (isDatabaseUrlConfigured()) return withDbRetry(() => pgUpsertRating(input));
     if (isSupabaseJsConfigured()) return sbUpsertRating(input);
     const dbMem = memory();
     const index = dbMem.ratings.findIndex(
