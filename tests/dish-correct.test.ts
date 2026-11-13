@@ -61,4 +61,8 @@ test("double read: agreement passes, disagreement is flagged and prefers known d
   assert.equal(merged[2].dishText, "ข้าวมันไก่");
   assert.equal(merged[2].needsReview, true);
   assert.deepEqual(mergeReadings(first, null, dictionary), first);
+  // กระเพรา / กะเพรา are the same dish: not a disagreement, and the first reading's spelling is kept.
+  const [same] = mergeReadings([cell(1, "กระเพราหมูสับ")], [cell(1, "กะเพราหมูสับ")], dictionary);
+  assert.equal(same.dishText, "กระเพราหมูสับ");
+  assert.equal(same.altText, undefined);
 });

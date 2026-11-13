@@ -136,6 +136,20 @@ export function knownShare(text: string, dictionary: DishDictionary) {
 
 const squash = (value: string) => value.replace(/\s+/g, "");
 
+/** Spellings that mean the same dish (official vs common). Two readings that differ only by these agree. */
+const SAME_DISH_VARIANTS: [RegExp, string][] = [
+  [/กระเพรา|กะเพรา|กระเพา/g, "กะเพรา"],
+  [/กระหล่ำ|กะหล่ำ/g, "กะหล่ำ"],
+  [/กระหรี่|กะหรี่/g, "กะหรี่"],
+  [/ฮอตดอก|ฮอทดอก/g, "ฮอตดอก"],
+  [/เกี๊ยว|เกี๋ยว|เกี้ยว/g, "เกี๊ยว"],
+];
+
+function sameDish(a: string, b: string) {
+  const norm = (value: string) => SAME_DISH_VARIANTS.reduce((text, [pattern, to]) => text.replace(pattern, to), squash(value));
+  return norm(a) === norm(b);
+}
+
 /** Apply spelling fixes, keeping the original text so the review table can show and undo it. */
 export function correctCells(cells: OcrCell[], dictionary: DishDictionary): OcrCell[] {
   return cells.map((cell) => {
@@ -167,7 +181,7 @@ export function mergeReadings(first: OcrCell[], second: OcrCell[] | null, dictio
       merged.push({ ...only, needsReview: true, altText: "" });
       continue;
     }
-    if (squash(one.dishText) === squash(two.dishText)) {
+    if (sameDish(one.dishText, two.dishText)) {
       merged.push({ ...one, needsReview: one.needsReview || two.needsReview });
       continue;
     }
