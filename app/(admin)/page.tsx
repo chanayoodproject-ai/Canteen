@@ -27,6 +27,7 @@ type Dashboard = {
   next: { date: string; meal: MealKey; sendTime: string; due: boolean } | null;
   logs: { id: string; menuDate: string; meal: MealKey; status: string; detail: string | null; createdAt: string }[];
   lineConfigured: boolean;
+  activeGroups?: number;
 };
 
 const STATE_STYLE: Record<string, string> = {
@@ -184,6 +185,9 @@ export default function HomePage() {
               </li>
             ))}
           </ul>
+        )}
+        {data.lineConfigured && typeof data.activeGroups === "number" && (
+          <p className="mt-3 text-sm text-[#6B5348]">ส่งเมนูอัตโนมัติเข้า {data.activeGroups} กลุ่ม LINE</p>
         )}
         {!data.lineConfigured && (
           <p className="mt-3 text-sm text-[#6B5348]">

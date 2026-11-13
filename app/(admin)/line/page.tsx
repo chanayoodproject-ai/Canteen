@@ -12,6 +12,8 @@ type Status = {
   hasSecret: boolean;
   hasTarget: boolean;
   targetMasked: string;
+  activeGroups?: number;
+  targetOverride?: boolean;
   configured: boolean;
   bot: { ok: boolean; displayName: string | null; error: string | null };
 };
@@ -70,7 +72,17 @@ export default function LinePage() {
         <section className="grid gap-3 md:grid-cols-3">
           <StatusCard title="Channel access token" ok={status.hasToken} detail={status.bot.displayName ? `บอท ${status.bot.displayName}` : status.bot.error || "ยังไม่ตรวจชื่อบอท"} />
           <StatusCard title="Channel secret" ok={status.hasSecret} detail={status.hasSecret ? "ใช้ตรวจลายเซ็น webhook" : "ยังไม่ได้ตั้ง"} />
-          <StatusCard title="ปลายทาง" ok={status.hasTarget} detail={status.targetMasked || "ใส่ user, group, room หรือคำว่า broadcast"} />
+          <StatusCard
+            title="ปลายทาง"
+            ok={status.hasTarget}
+            detail={
+              status.targetOverride
+                ? `ส่งเฉพาะ ${status.targetMasked} (ตั้งไว้ใน LINE_TARGET_ID)`
+                : status.activeGroups
+                  ? `ส่งอัตโนมัติเข้า ${status.activeGroups} กลุ่มที่บอทอยู่ · เชิญบอทเข้ากลุ่มใหม่แล้วจะส่งให้เอง`
+                  : "เชิญบอทเข้ากลุ่ม LINE แล้วพิมพ์อะไรก็ได้ในกลุ่มหนึ่งครั้ง"
+            }
+          />
         </section>
       )}
       <section className="rounded-[1.6rem] bg-white p-5">

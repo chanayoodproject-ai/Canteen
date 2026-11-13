@@ -3,6 +3,7 @@ import { MEALS, type MealKey } from "@/lib/meals";
 import { bangkokNow, describeSend, formatThaiDate, greeting, nextSend } from "@/lib/time";
 import { lineConfigured } from "@/lib/server/supabase";
 import { store } from "@/lib/server/store";
+import { countActiveTargets } from "@/lib/server/line-targets";
 
 export const dynamic = "force-dynamic";
 export const preferredRegion = "bom1";
@@ -11,10 +12,11 @@ export const maxDuration = 15;
 export async function GET() {
   try {
     const now = bangkokNow();
-    const [cells, settings, logs] = await Promise.all([
+    const [cells, settings, logs, activeGroups] = await Promise.all([
       store.getMonth(now.year, now.month),
       store.getSettings(),
       store.listLogs(8),
+      countActiveTargets(),
     ]);
     const todayCells = cells.filter((cell) => cell.day === now.day);
     const meals = MEALS.map((meta) => {
@@ -53,6 +55,7 @@ export async function GET() {
       next,
       logs,
       lineConfigured: await lineConfigured(),
+      activeGroups,
       supabase: store.usingSupabase(),
     });
   } catch (error) {
