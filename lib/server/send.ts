@@ -8,7 +8,7 @@ import { dishOn, store } from "@/lib/server/store";
 const STALE_CLAIM_MS = 5 * 60 * 1000;
 const AUTO_SEND_WINDOW_MINUTES = 10;
 
-function isWithinAutoSendWindow(now: BangkokNow, sendTime: string) {
+export function isWithinAutoSendWindow(now: BangkokNow, sendTime: string) {
   const start = timeToMinutes(sendTime);
   const nowMin = now.hour * 60 + now.minute;
   const end = Math.min(start + AUTO_SEND_WINDOW_MINUTES, 24 * 60);
