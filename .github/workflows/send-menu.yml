@@ -1,10 +1,6 @@
 name: Send canteen menus
 
 on:
-  schedule:
-    # Every 5 minutes in UTC; the app decides using Asia/Bangkok send times.
-    # GitHub cron can lag 5–15 minutes.
-    - cron: "*/5 * * * *"
   workflow_dispatch:
 
 jobs:

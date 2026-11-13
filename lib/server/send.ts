@@ -6,7 +6,7 @@ import { lineConfigured, maskTarget } from "@/lib/server/supabase";
 import { dishOn, store } from "@/lib/server/store";
 
 const STALE_CLAIM_MS = 5 * 60 * 1000;
-const AUTO_SEND_WINDOW_MINUTES = 20;
+const AUTO_SEND_WINDOW_MINUTES = 10;
 
 function isWithinAutoSendWindow(now: BangkokNow, sendTime: string) {
   const start = timeToMinutes(sendTime);

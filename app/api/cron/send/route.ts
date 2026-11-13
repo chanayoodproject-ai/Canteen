@@ -7,6 +7,7 @@ export const runtime = "nodejs";
 export const preferredRegion = "bom1";
 export const maxDuration = 30;
 
+// 20s is well under a 1-minute pg_cron cadence and only applies to unauthenticated calls.
 const RATE_WINDOW_MS = 20_000;
 let lastUnauthedAt = 0;
 
