@@ -1,8 +1,18 @@
 "use client";
 
 import { Logo } from "@/components/logo";
+import { menuLineShouldWrap, menuLines, menuTextSize, type DishTextSize } from "@/lib/flex";
 import { MEAL_MAP, type MealKey } from "@/lib/meals";
 import { formatThaiDate } from "@/lib/time";
+import { cn } from "@/lib/utils";
+
+const SIZE_CLASS: Record<DishTextSize, string> = {
+  "4xl": "text-[36px]",
+  "3xl": "text-[30px]",
+  xxl: "text-[26px]",
+  xl: "text-[22px]",
+  lg: "text-[19px]",
+};
 
 export function FlexPreview({
   date,
@@ -14,7 +24,8 @@ export function FlexPreview({
   dishText: string;
 }) {
   const meta = MEAL_MAP[meal];
-  const menu = dishText.trim() || "ยังไม่มีเมนูสำหรับมื้อนี้";
+  const lines = menuLines(dishText);
+  const size = menuTextSize(dishText);
   return (
     <div className="mx-auto w-full max-w-[390px] rounded-[2rem] border border-white/40 bg-[#7494C0] p-3 shadow-[0_24px_50px_-28px_rgba(44,24,16,0.7)]">
       <div className="mb-2 flex items-center justify-between px-2 text-[11px] text-white/90">
@@ -32,7 +43,20 @@ export function FlexPreview({
         </header>
         <div className="px-5 pb-4 pt-5">
           <p className="text-sm font-bold text-[#8C7264]">เมนูวันนี้</p>
-          <p className="mt-2 whitespace-pre-wrap text-4xl font-bold leading-tight">{menu}</p>
+          <div className="mt-2 space-y-1">
+            {lines.map((line, index) => (
+              <p
+                key={`${index}-${line}`}
+                className={cn(
+                  "font-bold leading-tight",
+                  SIZE_CLASS[size],
+                  menuLineShouldWrap(line) ? "whitespace-normal break-words" : "whitespace-nowrap",
+                )}
+              >
+                {line}
+              </p>
+            ))}
+          </div>
         </div>
       </article>
     </div>

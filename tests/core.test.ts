@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { addDays, bangkokNow, daysInMonth, defaultUploadMonth, shiftMonth, hasTimeArrived } from "@/lib/time";
 import { cleanDishText, ocrToDrafts, parseCsv, tableToDrafts } from "@/lib/parse-menu";
 import { decideMenuQuestion } from "@/lib/menu-question";
-import { buildFlexMessage } from "@/lib/flex";
+import { buildFlexMessage, menuLineShouldWrap, menuTextSize, thaiDisplayLength } from "@/lib/flex";
 import { isTransientDbError, withDbRetry } from "@/lib/server/db";
 
 const settings = [
@@ -94,8 +94,54 @@ test("flex message shows large menu text without rating buttons", () => {
   const dish = body.contents?.find((item) => item.text === "โจ๊กหมู");
   assert.ok(dish);
   assert.equal(dish.size, "4xl");
-  assert.equal(dish.wrap, true);
+  assert.equal(dish.wrap, false);
+  assert.equal(dish.adjustMode, "shrink-to-fit");
   assert.equal(dish.weight, "bold");
+});
+
+test("Thai display length ignores combining vowel and tone marks", () => {
+  assert.equal(thaiDisplayLength("ต้ม"), 2); // ต้ + ม, not 3 code units
+  assert.equal(thaiDisplayLength("โจ๊กหมู"), 5);
+  assert.equal(thaiDisplayLength("ผัดไทย"), 5);
+  assert.equal(thaiDisplayLength("ต้มจืดมะระยัดไส้ไก่"), 14);
+  assert.equal(thaiDisplayLength("ต้มจืดมะระยัดไส้ไก่"), [..."ต้มจืดมะระยัดไส้ไก่"].length - 5);
+});
+
+test("flex dish text size steps down with the longest dish", () => {
+  assert.equal(menuTextSize("ผัดไทย"), "4xl");
+  assert.equal(menuTextSize("โจ๊กหมู"), "4xl");
+  assert.equal(menuTextSize("ข้าวหน้าไก่"), "4xl"); // 8
+  assert.equal(menuTextSize("หมูผัดพริกขิง"), "3xl"); // 9
+  assert.equal(menuTextSize("ข้าวผัดต้มยำไก่"), "3xl"); // 10
+  assert.equal(menuTextSize("ก๋วยเตี๋ยวคั่วไก่"), "xxl"); // 11
+  assert.equal(menuTextSize("ต้มจืดผักกาดขาว"), "xxl"); // 12
+  assert.equal(menuTextSize("แกงเขียวหวานไก่"), "xl"); // 13
+  assert.equal(menuTextSize("ต้มจืดมะระยัดไส้ไก่"), "xl"); // 14, one line via shrink-to-fit
+  assert.equal(menuTextSize("กวางตุ้งหมูสับน้ำมันหอย"), "lg"); // 16
+  // Size follows the longest line in the message so both lines match.
+  assert.equal(menuTextSize("ผัดไทย\nต้มจืดมะระยัดไส้ไก่"), "xl");
+  assert.equal(menuLineShouldWrap("ต้มจืดมะระยัดไส้ไก่"), false);
+  assert.equal(menuLineShouldWrap("กระเพราลูกชิ้นปลากรายหน่อไม้เหลือง ต้มจืดไข่น้ำ"), true);
+
+  const long = buildFlexMessage({ date: "2027-01-01", meal: "lunch", dishText: "ต้มจืดมะระยัดไส้ไก่" });
+  const body = long.contents.body as { contents?: Array<Record<string, unknown>> };
+  const dish = body.contents?.find((item) => item.text === "ต้มจืดมะระยัดไส้ไก่");
+  assert.ok(dish);
+  assert.equal(dish.size, "xl");
+  assert.equal(dish.wrap, false);
+  assert.equal(dish.adjustMode, "shrink-to-fit");
+
+  const two = buildFlexMessage({
+    date: "2027-01-01",
+    meal: "lunch",
+    dishText: "กระเพราลูกชิ้นปลากรายหน่อไม้เหลือง ต้มจืดไข่น้ำ",
+  });
+  const twoBody = two.contents.body as { contents?: Array<Record<string, unknown>> };
+  const twoDish = twoBody.contents?.find((item) => String(item.text).includes("หน่อไม้เหลือง"));
+  assert.ok(twoDish);
+  assert.equal(twoDish.size, "lg");
+  assert.equal(twoDish.wrap, true);
+  assert.equal(twoDish.adjustMode, undefined);
 });
 
 test("db retry only retries transient errors", async () => {
