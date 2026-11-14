@@ -51,7 +51,10 @@ export function buildFlexMessage(input: { date: string; meal: MealKey; dishText:
       body: {
         type: "box",
         layout: "vertical",
-        paddingAll: "24px",
+        paddingTop: "20px",
+        paddingBottom: "16px",
+        paddingStart: "20px",
+        paddingEnd: "20px",
         contents: [
           { type: "text", text: "เมนูวันนี้", size: "sm", color: "#8C7264", weight: "bold" },
           {
@@ -61,7 +64,7 @@ export function buildFlexMessage(input: { date: string; meal: MealKey; dishText:
             weight: "bold",
             size: "4xl",
             color: "#2C1810",
-            margin: "lg",
+            margin: "md",
           },
         ],
       },

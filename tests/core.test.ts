@@ -84,7 +84,13 @@ test("flex message shows large menu text without rating buttons", () => {
   assert.equal(json.includes("ให้คะแนน"), false);
   assert.equal(json.includes("k=menu"), false);
   assert.equal("footer" in flex.contents, false);
-  const body = flex.contents.body as { contents?: Array<Record<string, unknown>> };
+  assert.equal("hero" in flex.contents, false);
+  const bubble = flex.contents;
+  const body = bubble.body as { contents?: Array<Record<string, unknown>>; height?: unknown; paddingAll?: unknown };
+  assert.equal(bubble.height, undefined);
+  assert.equal(body.height, undefined);
+  assert.equal(json.includes('"minHeight"'), false);
+  assert.equal(json.includes('"aspectRatio"'), false);
   const dish = body.contents?.find((item) => item.text === "โจ๊กหมู");
   assert.ok(dish);
   assert.equal(dish.size, "4xl");

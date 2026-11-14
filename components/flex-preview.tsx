@@ -30,9 +30,9 @@ export function FlexPreview({
             <p className="mt-1 text-xs text-white/85">{formatThaiDate(date)}</p>
           </div>
         </header>
-        <div className="px-6 py-6">
+        <div className="px-5 pb-4 pt-5">
           <p className="text-sm font-bold text-[#8C7264]">เมนูวันนี้</p>
-          <p className="mt-3 whitespace-pre-wrap text-4xl font-bold leading-tight">{menu}</p>
+          <p className="mt-2 whitespace-pre-wrap text-4xl font-bold leading-tight">{menu}</p>
         </div>
       </article>
     </div>
