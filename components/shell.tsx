@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { CalendarDays, Clock, Home, MessageCircle, Settings, Star, Upload } from "lucide-react";
+import { CalendarDays, Clock, Home, MessageCircle, Settings, Upload } from "lucide-react";
 import { Logo } from "@/components/logo";
 import { cn } from "@/lib/utils";
 
@@ -11,7 +11,6 @@ const LINKS = [
   { href: "/calendar", label: "ปฏิทิน", icon: CalendarDays },
   { href: "/upload", label: "อัปโหลด", icon: Upload, emphasize: true },
   { href: "/schedule", label: "เวลา", icon: Clock },
-  { href: "/ratings", label: "คะแนน", icon: Star },
   { href: "/preview", label: "LINE", icon: MessageCircle },
   { href: "/line", label: "ตั้งค่า", icon: Settings },
 ];
@@ -60,7 +59,7 @@ export function AppShell({
       )}
       <main className="mx-auto max-w-6xl px-4 py-4 pb-28 md:pb-10">{children}</main>
       <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-[#D7EBD4] bg-white/95 pb-[env(safe-area-inset-bottom)] backdrop-blur-md md:hidden">
-        <div className="grid grid-cols-[1fr_1.05fr_1.35fr_0.85fr_1fr_0.8fr_0.95fr]">
+        <div className="grid grid-cols-[1fr_1.05fr_1.4fr_0.9fr_1fr_0.95fr]">
           {LINKS.map((link) => {
             const active = pathname === link.href;
             const Icon = link.icon;
