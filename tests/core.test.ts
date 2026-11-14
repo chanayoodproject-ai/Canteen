@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { addDays, bangkokNow, daysInMonth, defaultUploadMonth, shiftMonth, hasTimeArrived } from "@/lib/time";
 import { cleanDishText, ocrToDrafts, parseCsv, tableToDrafts } from "@/lib/parse-menu";
 import { decideMenuQuestion } from "@/lib/menu-question";
-import { parsePostback, buildFlexMessage } from "@/lib/flex";
+import { buildFlexMessage } from "@/lib/flex";
 import { isTransientDbError, withDbRetry } from "@/lib/server/db";
 
 const settings = [
@@ -75,13 +75,21 @@ test("menu question decisions", () => {
   assert.deepEqual(decideMenuQuestion("สวัสดี", morning, settings), { kind: "ignore" });
 });
 
-test("rating postback round trip", () => {
-  const flex = buildFlexMessage({ date: "2027-01-01", meal: "late", dishText: "โจ๊ก" });
+test("flex message shows large menu text without rating buttons", () => {
+  const flex = buildFlexMessage({ date: "2027-01-01", meal: "late", dishText: "โจ๊กหมู" });
   const json = JSON.stringify(flex);
-  const data = /k=menu&d=2027-01-01&m=late&s=5/.exec(json)?.[0];
-  assert.ok(data);
-  assert.deepEqual(parsePostback(data!), { ok: true, kind: "menu", date: "2027-01-01", meal: "late", score: 5 });
-  assert.deepEqual(parsePostback("k=menu&d=2027-01-01&m=late&s=9"), { ok: false });
+  assert.equal(flex.type, "flex");
+  assert.match(flex.altText, /โจ๊กหมู/);
+  assert.equal(json.includes("postback"), false);
+  assert.equal(json.includes("ให้คะแนน"), false);
+  assert.equal(json.includes("k=menu"), false);
+  assert.equal("footer" in flex.contents, false);
+  const body = flex.contents.body as { contents?: Array<Record<string, unknown>> };
+  const dish = body.contents?.find((item) => item.text === "โจ๊กหมู");
+  assert.ok(dish);
+  assert.equal(dish.size, "4xl");
+  assert.equal(dish.wrap, true);
+  assert.equal(dish.weight, "bold");
 });
 
 test("db retry only retries transient errors", async () => {
