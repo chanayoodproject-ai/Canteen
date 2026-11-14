@@ -191,7 +191,7 @@ export default function HomePage() {
         )}
         {!data.lineConfigured && (
           <p className="mt-3 text-sm text-[#6B5348]">
-            ยังไม่มี LINE การส่งตอนนี้เป็นการจำลอง และดูตัวอย่างข้อความพร้อมปุ่มคะแนนได้ที่{" "}
+            ยังไม่มี LINE การส่งตอนนี้เป็นการจำลอง และดูตัวอย่างข้อความได้ที่{" "}
             <Link href="/preview" className="font-semibold text-[#A33B24]">
               หน้าตัวอย่าง
             </Link>

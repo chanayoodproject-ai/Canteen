@@ -62,7 +62,7 @@ export default function LinePage() {
         <p className="text-sm text-[#2F6B4F]">Messaging API</p>
         <h1 className="text-3xl font-bold">ตั้งค่า LINE</h1>
         <p className="mt-1 max-w-2xl text-sm leading-6 text-[#6B5348]">
-          โทเค็นและความลับอยู่ที่ตัวแปรแวดล้อมของเซิร์ฟเวอร์เท่านั้น ไม่ถูกเขียนลงตารางที่เบราว์เซอร์อ่านได้ ถ้ายังไม่ใส่ค่า หน้าตัวอย่างข้อความและปุ่มคะแนนยังใช้ได้
+          โทเค็นและความลับอยู่ที่ตัวแปรแวดล้อมของเซิร์ฟเวอร์เท่านั้น ไม่ถูกเขียนลงตารางที่เบราว์เซอร์อ่านได้ ถ้ายังไม่ใส่ค่า หน้าตัวอย่างข้อความยังใช้ได้
         </p>
       </div>
       {error && <p className="rounded-2xl bg-white p-4">{error}</p>}
@@ -89,7 +89,7 @@ export default function LinePage() {
         <h2 className="font-bold">Webhook URL</h2>
         <p className="mt-2 break-all rounded-2xl bg-[#FFF4D6] px-3 py-3 text-sm">{webhook || "/api/line/webhook"}</p>
         <p className="mt-2 text-sm leading-6 text-[#6B5348]">
-          ใน LINE Developers เปิด Messaging API แล้ววาง URL นี้ เปิด Use webhook และปิดการตอบอัตโนมัติถ้าไม่ต้องการให้ทับข้อความขอบคุณ
+          ใน LINE Developers เปิด Messaging API แล้ววาง URL นี้ เปิด Use webhook และปิดการตอบอัตโนมัติถ้าไม่ต้องการให้ทับคำตอบเมนู
         </p>
         <div className="mt-4 flex flex-wrap items-center gap-2">
           <label className="text-sm" htmlFor="test-meal">มื้อทดสอบ</label>
@@ -113,7 +113,7 @@ export default function LinePage() {
         </article>
         <article className="rounded-[1.6rem] bg-[#2C1810] p-5 text-sm leading-6 text-[#FFF6EC]">
           <h2 className="text-base font-bold text-white">สิ่งที่ข้อความส่งไป</h2>
-          <p className="mt-2">วันที่ มื้อ และเมนูเต็ม แล้วตามด้วยปุ่ม 1–5 สองแถว สำหรับเมนูอาหารและรสชาติ เมื่อมีคนกด webhook จะบันทึกหรืออัปเดตคะแนน แล้วตอบขอบคุณสั้น ๆ</p>
+          <p className="mt-2">วันที่ มื้อ และเมนูอาหารตัวใหญ่ อ่านง่ายบนมือถือ ไม่มีปุ่มให้คะแนน</p>
         </article>
       </section>
     </div>
