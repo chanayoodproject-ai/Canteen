@@ -1,10 +1,8 @@
 import { NextResponse, after } from "next/server";
-import { parsePostback } from "@/lib/flex";
 import { resolveLineChannelSecret } from "@/lib/server/app-secrets";
 import { verifyLineSignature } from "@/lib/server/line";
 import { handleMenuQuestion } from "@/lib/server/ask-menu";
 import { markLineTargetInactive, upsertLineTarget } from "@/lib/server/line-targets";
-import { store } from "@/lib/server/store";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -21,7 +19,6 @@ type LineSource = {
 type LineEvent = {
   type?: string;
   replyToken?: string;
-  postback?: { data?: string };
   message?: { type?: string; text?: string };
   source?: LineSource;
 };
@@ -53,17 +50,7 @@ async function handleEvents(events: LineEvent[]) {
     } catch {
       // Keep processing remaining events even if a menu reply fails.
     }
-    if (event.type !== "postback" || !event.postback?.data) continue;
-    const parsed = parsePostback(event.postback.data);
-    if (!parsed.ok) continue;
-    const userId = event.source?.userId || "unknown";
-    await store.upsertRating({
-      menuDate: parsed.date,
-      meal: parsed.meal,
-      lineUserId: userId,
-      menuScore: parsed.kind === "menu" ? parsed.score : undefined,
-      tasteScore: parsed.kind === "taste" ? parsed.score : undefined,
-    });
+    // Ignore leftover rating postbacks from older Flex messages.
   }
 }
 

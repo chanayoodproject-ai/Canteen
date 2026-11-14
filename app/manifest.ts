@@ -4,7 +4,7 @@ export default function manifest(): MetadataRoute.Manifest {
   return {
     name: "Canteen มีอารายกิน",
     short_name: "มีอารายกิน",
-    description: "เมนูโรงอาหารรายวัน ส่งเข้า LINE พร้อมให้คะแนน",
+    description: "เมนูโรงอาหารรายวัน ส่งเข้า LINE ด้วยตัวอักษรใหญ่",
     start_url: "/",
     display: "standalone",
     background_color: "#06BB46",

@@ -17,7 +17,7 @@ const charm = Charm({
 
 export const metadata: Metadata = {
   title: "Canteen มีอารายกิน",
-  description: "จัดการเมนูโรงอาหารรายเดือน ส่งเข้า LINE พร้อมปุ่มให้คะแนนเมนูและรสชาติ",
+  description: "จัดการเมนูโรงอาหารรายเดือน แล้วส่งเมนูตัวใหญ่เข้า LINE",
   applicationName: "Canteen มีอารายกิน",
   appleWebApp: { capable: true, title: "มีอารายกิน", statusBarStyle: "default" },
   icons: {
