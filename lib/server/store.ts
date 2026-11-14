@@ -1,6 +1,6 @@
 import november from "@/data/november-2026.json";
 import { MEALS, MEAL_KEYS, type MealKey } from "@/lib/meals";
-import { daysInMonth, isoFromParts } from "@/lib/time";
+import { daysInMonth } from "@/lib/time";
 import { isDatabaseUrlConfigured, db, asIsoDate, asIsoTime, asIso, withDbRetry } from "@/lib/server/db";
 import { isSupabaseConfigured, isSupabaseJsConfigured, supabaseAdmin } from "@/lib/server/supabase";
 
@@ -33,21 +33,10 @@ export type SendLog = {
   createdAt: string;
 };
 
-export type RatingRow = {
-  id: string;
-  menuDate: string;
-  meal: MealKey;
-  lineUserId: string;
-  menuScore: number | null;
-  tasteScore: number | null;
-  updatedAt: string;
-};
-
 type MemoryDB = {
   menus: MenuCell[];
   settings: SendSetting[];
   logs: SendLog[];
-  ratings: RatingRow[];
 };
 
 function seedMemory(): MemoryDB {
@@ -77,7 +66,6 @@ function seedMemory(): MemoryDB {
     menus,
     settings: MEALS.map((meal) => ({ meal: meal.key, sendTime: meal.defaultTime, enabled: true })),
     logs: [],
-    ratings: [],
   };
 }
 
@@ -150,26 +138,6 @@ function mapLog(row: {
     targetId: row.target_id,
     detail: row.detail,
     createdAt: row.created_at,
-  };
-}
-
-function mapRating(row: {
-  id: string;
-  menu_date: string;
-  meal: string;
-  line_user_id: string;
-  menu_score: number | null;
-  taste_score: number | null;
-  updated_at: string;
-}): RatingRow {
-  return {
-    id: row.id,
-    menuDate: row.menu_date,
-    meal: asMeal(row.meal),
-    lineUserId: row.line_user_id,
-    menuScore: row.menu_score,
-    tasteScore: row.taste_score,
-    updatedAt: row.updated_at,
   };
 }
 
@@ -290,56 +258,6 @@ async function sbUpdateLog(id: string, patch: { status: SendStatus; detail: stri
   if (error) throw new Error(error.message);
 }
 
-async function sbRatings(from: string, to: string) {
-  const { data, error } = await supabaseAdmin()
-    .from("ratings")
-    .select("id,menu_date,meal,line_user_id,menu_score,taste_score,updated_at")
-    .gte("menu_date", from)
-    .lte("menu_date", to);
-  if (error) throw new Error(error.message);
-  return (data ?? []).map(mapRating);
-}
-
-async function sbUpsertRating(input: {
-  menuDate: string;
-  meal: MealKey;
-  lineUserId: string;
-  menuScore?: number;
-  tasteScore?: number;
-}) {
-  const existing = await supabaseAdmin()
-    .from("ratings")
-    .select("id,menu_date,meal,line_user_id,menu_score,taste_score,updated_at")
-    .eq("menu_date", input.menuDate)
-    .eq("meal", input.meal)
-    .eq("line_user_id", input.lineUserId)
-    .maybeSingle();
-  if (existing.error) throw new Error(existing.error.message);
-  const previous = existing.data ? mapRating(existing.data) : null;
-  const menuScore = previous?.menuScore ?? input.menuScore ?? null;
-  const tasteScore = previous?.tasteScore ?? input.tasteScore ?? null;
-  const { data, error } = await supabaseAdmin()
-    .from("ratings")
-    .upsert(
-      {
-        menu_date: input.menuDate,
-        meal: input.meal,
-        line_user_id: input.lineUserId,
-        menu_score: menuScore,
-        taste_score: tasteScore,
-      },
-      { onConflict: "menu_date,meal,line_user_id" },
-    )
-    .select("id,menu_date,meal,line_user_id,menu_score,taste_score,updated_at")
-    .single();
-  if (error) throw new Error(error.message);
-  const row = mapRating(data);
-  const changed =
-    row.menuScore !== (previous?.menuScore ?? null) || row.tasteScore !== (previous?.tasteScore ?? null);
-  return { updated: Boolean(previous) && changed, row };
-}
-
-
 async function pgGetMonth(year: number, month: number) {
   const rows = await db()`
     select year, month, day, meal, dish_text, needs_review
@@ -438,18 +356,6 @@ function mapPgLog(row: Record<string, unknown>): SendLog {
   });
 }
 
-function mapPgRating(row: Record<string, unknown>): RatingRow {
-  return mapRating({
-    id: String(row.id),
-    menu_date: asIsoDate(row.menu_date),
-    meal: String(row.meal),
-    line_user_id: String(row.line_user_id),
-    menu_score: row.menu_score == null ? null : Number(row.menu_score),
-    taste_score: row.taste_score == null ? null : Number(row.taste_score),
-    updated_at: asIso(row.updated_at),
-  });
-}
-
 async function pgLogs(limit: number) {
   const data = await db()`
     select id, menu_date, meal, status, target, detail, created_at
@@ -495,51 +401,6 @@ async function pgUpdateLog(id: string, patch: { status: SendStatus; detail: stri
     set status = ${patch.status}, detail = ${patch.detail}
     where id = ${id}::uuid
   `;
-}
-
-async function pgRatings(from: string, to: string) {
-  const data = await db()`
-    select id, menu_date, meal, line_user_id, menu_score, taste_score, updated_at
-    from public.ratings
-    where menu_date >= ${from}::date and menu_date <= ${to}::date
-  `;
-  return data.map(mapPgRating);
-}
-
-async function pgUpsertRating(input: {
-  menuDate: string;
-  meal: MealKey;
-  lineUserId: string;
-  menuScore?: number;
-  tasteScore?: number;
-}) {
-  const existing = await db()`
-    select id, menu_date, meal, line_user_id, menu_score, taste_score, updated_at
-    from public.ratings
-    where menu_date = ${input.menuDate}::date and meal = ${input.meal} and line_user_id = ${input.lineUserId}
-    limit 1
-  `;
-  const previous = existing[0] ? mapPgRating(existing[0]) : null;
-  const menuScore = previous?.menuScore ?? input.menuScore ?? null;
-  const tasteScore = previous?.tasteScore ?? input.tasteScore ?? null;
-  const data = await db()`
-    insert into public.ratings (menu_date, meal, line_user_id, menu_score, taste_score)
-    values (${input.menuDate}::date, ${input.meal}, ${input.lineUserId}, ${menuScore}, ${tasteScore})
-    on conflict (menu_date, meal, line_user_id) do update set
-      menu_score = coalesce(public.ratings.menu_score, excluded.menu_score),
-      taste_score = coalesce(public.ratings.taste_score, excluded.taste_score),
-      updated_at = case
-        when public.ratings.menu_score is null and excluded.menu_score is not null
-          or public.ratings.taste_score is null and excluded.taste_score is not null
-        then now()
-        else public.ratings.updated_at
-      end
-    returning id, menu_date, meal, line_user_id, menu_score, taste_score, updated_at
-  `;
-  const row = mapPgRating(data[0]);
-  const changed =
-    row.menuScore !== (previous?.menuScore ?? null) || row.tasteScore !== (previous?.tasteScore ?? null);
-  return { updated: Boolean(previous) && changed, row };
 }
 
 function memGetMonth(year: number, month: number) {
@@ -656,45 +517,6 @@ export const store = {
       row.status = patch.status;
       row.detail = patch.detail;
     }
-  },
-  async listRatings(year: number, month: number) {
-    const from = isoFromParts(year, month, 1);
-    const to = isoFromParts(year, month, daysInMonth(year, month));
-    if (isDatabaseUrlConfigured()) return withDbRetry(() => pgRatings(from, to));
-    return isSupabaseJsConfigured()
-      ? sbRatings(from, to)
-      : memory().ratings.filter((row) => row.menuDate >= from && row.menuDate <= to);
-  },
-  async upsertRating(input: {
-    menuDate: string;
-    meal: MealKey;
-    lineUserId: string;
-    menuScore?: number;
-    tasteScore?: number;
-  }) {
-    if (isDatabaseUrlConfigured()) return withDbRetry(() => pgUpsertRating(input));
-    if (isSupabaseJsConfigured()) return sbUpsertRating(input);
-    const dbMem = memory();
-    const index = dbMem.ratings.findIndex(
-      (row) => row.menuDate === input.menuDate && row.meal === input.meal && row.lineUserId === input.lineUserId,
-    );
-    const previous = index >= 0 ? dbMem.ratings[index] : null;
-    const menuScore = previous?.menuScore ?? input.menuScore ?? null;
-    const tasteScore = previous?.tasteScore ?? input.tasteScore ?? null;
-    const changed =
-      menuScore !== (previous?.menuScore ?? null) || tasteScore !== (previous?.tasteScore ?? null);
-    const row: RatingRow = {
-      id: previous?.id ?? crypto.randomUUID(),
-      menuDate: input.menuDate,
-      meal: input.meal,
-      lineUserId: input.lineUserId,
-      menuScore,
-      tasteScore,
-      updatedAt: changed ? new Date().toISOString() : previous?.updatedAt ?? new Date().toISOString(),
-    };
-    if (index >= 0) dbMem.ratings[index] = row;
-    else dbMem.ratings.push(row);
-    return { updated: Boolean(previous) && changed, row };
   },
 };
 
