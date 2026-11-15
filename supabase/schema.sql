@@ -101,3 +101,5 @@ begin
     end if;
   end loop;
 end $$;
+
+-- See migrations/20261115000000_menu_asks.sql for menu_asks (per-group, per-meal question receipts).
