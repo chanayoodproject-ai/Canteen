@@ -9,6 +9,18 @@ import { dishOn, store } from "@/lib/server/store";
 const STALE_CLAIM_MS = 5 * 60 * 1000;
 const AUTO_SEND_WINDOW_MINUTES = 10;
 
+/** Why cron should skip this group for a meal, or null if it should send. */
+export function skipReasonForTarget(input: {
+  asked: boolean;
+  log: { status: string; detail: string | null } | null;
+}): string | null {
+  if (input.asked) return "กลุ่มนี้ถามเมนูไปแล้ว";
+  if (!input.log) return null;
+  if (input.log.status === "claimed") return "มีงานส่งมื้อนี้อยู่แล้ว";
+  if (input.log.detail === "ตอบคำถามในแชทแล้ว") return "กลุ่มนี้ถามเมนูไปแล้ว";
+  return "ส่งมื้อนี้ไปแล้ววันนี้";
+}
+
 export function isWithinAutoSendWindow(now: BangkokNow, sendTime: string) {
   const start = timeToMinutes(sendTime);
   const nowMin = now.hour * 60 + now.minute;
@@ -119,18 +131,11 @@ async function sendToTarget(input: {
 }): Promise<TargetOutcome> {
   const { date, meal, label, dishText, targetId } = input;
   const masked = maskTarget(targetId);
+  const asked = await store.hasMenuAsk(date, meal, targetId);
   const already = await store.latestLog(date, meal, ["sent", "claimed"], targetId);
-  if (already) {
-    return {
-      target: masked,
-      status: "skipped",
-      detail:
-        already.status === "claimed"
-          ? "มีงานส่งมื้อนี้อยู่แล้ว"
-          : already.detail === "ตอบคำถามในแชทแล้ว"
-            ? "กลุ่มนี้ถามเมนูไปแล้ว"
-            : "ส่งมื้อนี้ไปแล้ววันนี้",
-    };
+  const skip = skipReasonForTarget({ asked, log: already });
+  if (skip) {
+    return { target: masked, status: "skipped", detail: skip };
   }
   if (input.dryRun) return { target: masked, status: "would_send", detail: `จะส่ง${label}เข้ากลุ่ม ${masked}` };
 

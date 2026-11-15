@@ -33,10 +33,19 @@ export type SendLog = {
   createdAt: string;
 };
 
+/** One row means this group/user already received today's menu for that meal via a chat question. */
+export type MenuAsk = {
+  menuDate: string;
+  meal: MealKey;
+  targetId: string;
+  createdAt: string;
+};
+
 type MemoryDB = {
   menus: MenuCell[];
   settings: SendSetting[];
   logs: SendLog[];
+  asks: MenuAsk[];
 };
 
 function seedMemory(): MemoryDB {
@@ -66,6 +75,7 @@ function seedMemory(): MemoryDB {
     menus,
     settings: MEALS.map((meal) => ({ meal: meal.key, sendTime: meal.defaultTime, enabled: true })),
     logs: [],
+    asks: [],
   };
 }
 
@@ -73,6 +83,7 @@ const globalStore = globalThis as unknown as { __canteenMemory?: MemoryDB };
 
 function memory() {
   if (!globalStore.__canteenMemory) globalStore.__canteenMemory = seedMemory();
+  if (!globalStore.__canteenMemory.asks) globalStore.__canteenMemory.asks = [];
   return globalStore.__canteenMemory;
 }
 
@@ -434,6 +445,66 @@ async function sbKnownDishTexts() {
   return [...new Set((data ?? []).map((row) => String(row.dish_text ?? "")))];
 }
 
+
+async function sbHasMenuAsk(menuDate: string, meal: MealKey, targetId: string) {
+  const { data, error } = await supabaseAdmin()
+    .from("menu_asks")
+    .select("menu_date")
+    .eq("menu_date", menuDate)
+    .eq("meal", meal)
+    .eq("target_id", targetId)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return Boolean(data);
+}
+
+async function sbRecordMenuAsk(input: { menuDate: string; meal: MealKey; targetId: string }) {
+  const { error } = await supabaseAdmin().from("menu_asks").insert({
+    menu_date: input.menuDate,
+    meal: input.meal,
+    target_id: input.targetId,
+  });
+  if (error) {
+    if (error.code === "23505") return false;
+    throw new Error(error.message);
+  }
+  return true;
+}
+
+async function pgHasMenuAsk(menuDate: string, meal: MealKey, targetId: string) {
+  const rows = await db()`
+    select 1 from public.menu_asks
+    where menu_date = ${menuDate}::date and meal = ${meal} and target_id = ${targetId}
+    limit 1
+  `;
+  return rows.length > 0;
+}
+
+async function pgRecordMenuAsk(input: { menuDate: string; meal: MealKey; targetId: string }) {
+  try {
+    await db()`
+      insert into public.menu_asks (menu_date, meal, target_id)
+      values (${input.menuDate}::date, ${input.meal}, ${input.targetId})
+    `;
+    return true;
+  } catch (error) {
+    if (typeof error === "object" && error && "code" in error && (error as { code: string }).code === "23505") {
+      return false;
+    }
+    throw error;
+  }
+}
+
+function memHasMenuAsk(menuDate: string, meal: MealKey, targetId: string) {
+  return memory().asks.some((row) => row.menuDate === menuDate && row.meal === meal && row.targetId === targetId);
+}
+
+function memRecordMenuAsk(input: { menuDate: string; meal: MealKey; targetId: string }) {
+  if (memHasMenuAsk(input.menuDate, input.meal, input.targetId)) return false;
+  memory().asks.push({ ...input, createdAt: new Date().toISOString() });
+  return true;
+}
+
 export const store = {
   usingSupabase: isSupabaseConfigured,
   async knownDishTexts(): Promise<string[]> {
@@ -517,6 +588,16 @@ export const store = {
       row.status = patch.status;
       row.detail = patch.detail;
     }
+  },
+  async hasMenuAsk(menuDate: string, meal: MealKey, targetId: string) {
+    if (isDatabaseUrlConfigured()) return withDbRetry(() => pgHasMenuAsk(menuDate, meal, targetId));
+    if (isSupabaseJsConfigured()) return sbHasMenuAsk(menuDate, meal, targetId);
+    return memHasMenuAsk(menuDate, meal, targetId);
+  },
+  async recordMenuAsk(input: { menuDate: string; meal: MealKey; targetId: string }) {
+    if (isDatabaseUrlConfigured()) return pgRecordMenuAsk(input);
+    if (isSupabaseJsConfigured()) return sbRecordMenuAsk(input);
+    return memRecordMenuAsk(input);
   },
 };
 
