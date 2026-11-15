@@ -1,7 +1,11 @@
 import { buildFlexMessage } from "@/lib/flex";
+import type { BotId } from "@/lib/line-bots";
+import { shouldAnswerQuestion } from "@/lib/line-bots";
 import { MEAL_MAP, type MealKey } from "@/lib/meals";
 import { decideMenuQuestion } from "@/lib/menu-question";
+import { configuredLineBots } from "@/lib/server/app-secrets";
 import { replyLine, replyLineMessages } from "@/lib/server/line";
+import { getTargetBots } from "@/lib/server/line-targets";
 import { dishOn, store } from "@/lib/server/store";
 import { formatThaiDateShort, bangkokNow } from "@/lib/time";
 
@@ -28,7 +32,7 @@ export async function alreadyDelivered(menuDate: string, meal: MealKey, targetId
   return Boolean(await store.latestLog(menuDate, meal, ["sent", "claimed"], targetId));
 }
 
-export async function handleMenuQuestion(event: TextEvent) {
+export async function handleMenuQuestion(event: TextEvent, bot: BotId = "1") {
   if (event.type !== "message" || event.message?.type !== "text" || !event.replyToken) {
     return { handled: false, replied: false, markedSent: false };
   }
@@ -43,7 +47,25 @@ export async function handleMenuQuestion(event: TextEvent) {
     return { handled: true, replied: false, markedSent: false };
   }
 
+  const isGroup = event.source?.type === "group" || event.source?.type === "room";
   const targetId = questionTargetId(event.source);
+  if (isGroup) {
+    const [configured, botsInGroup] = await Promise.all([configuredLineBots(), getTargetBots(targetId)]);
+    if (
+      !shouldAnswerQuestion({
+        date: now.iso,
+        bot1Configured: configured.bot1,
+        bot2Configured: configured.bot2,
+        botsInGroup,
+        receivingBot: bot,
+        isGroup: true,
+      })
+    ) {
+      // The other bot is today's sender and will answer this same group message.
+      return { handled: true, replied: false, markedSent: false, skipped: true };
+    }
+  }
+
   const meals: MealKey[] = [];
   for (const meal of decision.meals) {
     if (decision.day === "today" && targetId && (await alreadyDelivered(decision.date, meal, targetId))) {
@@ -71,11 +93,11 @@ export async function handleMenuQuestion(event: TextEvent) {
   if (messages.length === 0) {
     const when = decision.day === "today" ? "วันนี้" : formatThaiDateShort(decision.date);
     const label = meals.length === 1 ? MEAL_MAP[meals[0]].full : "";
-    await replyLine(event.replyToken, `${when}ยังไม่มีเมนู${label}ครับ`);
+    await replyLine(event.replyToken, `${when}ยังไม่มีเมนู${label}ครับ`, bot);
     return { handled: true, replied: true, markedSent: false, meals };
   }
 
-  const sent = await replyLineMessages(event.replyToken, messages);
+  const sent = await replyLineMessages(event.replyToken, messages, bot);
   if (!sent.ok) {
     return { handled: true, replied: false, markedSent: false, meals: delivered };
   }

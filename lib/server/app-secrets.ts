@@ -1,3 +1,5 @@
+import type { BotId } from "@/lib/line-bots";
+import { LINE_BOT_SECRET_KEYS } from "@/lib/line-bots";
 import { db, isDatabaseUrlConfigured } from "@/lib/server/db";
 
 // Cache DB-stored secrets briefly so a rotated LINE token is picked up without a redeploy.
@@ -24,10 +26,20 @@ export async function getAppSecret(key: string) {
   }
 }
 
-export function resolveLineAccessToken() {
-  return getAppSecret("LINE_CHANNEL_ACCESS_TOKEN");
+export function resolveLineAccessToken(bot: BotId = "1") {
+  return getAppSecret(LINE_BOT_SECRET_KEYS[bot].token);
 }
 
-export function resolveLineChannelSecret() {
-  return getAppSecret("LINE_CHANNEL_SECRET");
+export function resolveLineChannelSecret(bot: BotId = "1") {
+  return getAppSecret(LINE_BOT_SECRET_KEYS[bot].secret);
+}
+
+export async function lineBotConfigured(bot: BotId = "1") {
+  const [token, secret] = await Promise.all([resolveLineAccessToken(bot), resolveLineChannelSecret(bot)]);
+  return Boolean(token && secret);
+}
+
+export async function configuredLineBots() {
+  const [bot1, bot2] = await Promise.all([lineBotConfigured("1"), lineBotConfigured("2")]);
+  return { bot1, bot2 };
 }
