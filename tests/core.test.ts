@@ -2,7 +2,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { addDays, bangkokNow, daysInMonth, defaultUploadMonth, shiftMonth, hasTimeArrived } from "@/lib/time";
 import { cleanDishText, ocrToDrafts, parseCsv, tableToDrafts } from "@/lib/parse-menu";
-import { decideMenuQuestion, parseMenuQuestionDate } from "@/lib/menu-question";
+import {
+  decideMenuQuestion,
+  isDuplicateMenuReply,
+  parseMenuQuestionDate,
+  REPLY_DEDUPE_MS,
+} from "@/lib/menu-question";
 import { skipReasonForTarget } from "@/lib/server/send";
 import { store } from "@/lib/server/store";
 import { buildFlexMessage, menuLineShouldWrap, menuTextSize, thaiDisplayLength } from "@/lib/flex";
@@ -76,9 +81,10 @@ test("menu question decisions", () => {
     day: "today",
   });
   assert.deepEqual(decideMenuQuestion("เช้านี้มีอะไรกิน", bangkokNow(new Date("2026-11-13T10:00:00Z")), settings), {
-    kind: "past",
+    kind: "ask",
     date: "2026-11-13",
     meals: ["breakfast"],
+    day: "today",
   });
   assert.deepEqual(decideMenuQuestion("สวัสดี", morning, settings), { kind: "ignore" });
 });
@@ -143,11 +149,75 @@ test("menu questions understand Thai dates and stay silent about the past", () =
     day: "today",
   });
   assert.deepEqual(decideMenuQuestion("มื้อเที่ยงกินอะไร", fridayAfternoon, settings), {
-    kind: "past",
+    kind: "ask",
     date: "2026-11-13",
     meals: ["lunch"],
+    day: "today",
+  });
+  const fridayNight = bangkokNow(new Date("2026-11-13T14:00:00Z")); // 21:00 BKK, after late
+  assert.deepEqual(decideMenuQuestion("มีอะไรกิน", fridayNight, settings), {
+    kind: "ask",
+    date: "2026-11-13",
+    meals: ["breakfast", "lunch", "dinner", "late"],
+    day: "today",
+  });
+  assert.deepEqual(decideMenuQuestion("มื้อดึกกินอะไร", fridayNight, settings), {
+    kind: "ask",
+    date: "2026-11-13",
+    meals: ["late"],
+    day: "today",
   });
   assert.equal(decideMenuQuestion("วันนี้ไปไหน", fridayMorning, settings).kind, "ignore");
+});
+
+test("same-day menu questions are answered even after a push, with a 1-minute dedupe", () => {
+  const first = {
+    targetId: "Cg-group-1",
+    menuDate: "2026-11-16",
+    questionNorm: "มีอะไรกิน",
+    meals: ["lunch" as const],
+    at: 1_000_000,
+  };
+  assert.equal(
+    isDuplicateMenuReply([first], {
+      targetId: "Cg-group-1",
+      menuDate: "2026-11-16",
+      questionNorm: "มีอะไรกิน",
+      meals: ["lunch"],
+      nowMs: 1_000_000 + 30_000,
+    }),
+    true,
+  );
+  assert.equal(
+    isDuplicateMenuReply([first], {
+      targetId: "Cg-group-1",
+      menuDate: "2026-11-16",
+      questionNorm: "มีอะไรกิน",
+      meals: ["lunch"],
+      nowMs: 1_000_000 + REPLY_DEDUPE_MS,
+    }),
+    false,
+  );
+  assert.equal(
+    isDuplicateMenuReply([first], {
+      targetId: "Cg-group-1",
+      menuDate: "2026-11-16",
+      questionNorm: "มื้อเที่ยงกินอะไร",
+      meals: ["lunch"],
+      nowMs: 1_000_000 + 30_000,
+    }),
+    false,
+  );
+  assert.equal(
+    isDuplicateMenuReply([first], {
+      targetId: "Cg-other",
+      menuDate: "2026-11-16",
+      questionNorm: "มีอะไรกิน",
+      meals: ["lunch"],
+      nowMs: 1_000_000 + 30_000,
+    }),
+    false,
+  );
 });
 
 test("cron skips a group that already asked today's meal", async () => {

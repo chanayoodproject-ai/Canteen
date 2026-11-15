@@ -2,6 +2,7 @@ import november from "@/data/november-2026.json";
 import type { BotId } from "@/lib/line-bots";
 import { MEALS, MEAL_KEYS, type MealKey } from "@/lib/meals";
 import { defaultSendPlan, normalizeSendPlan, type SendPlan } from "@/lib/send-plan";
+import type { MenuReplyDedupeKey } from "@/lib/menu-question";
 import { daysInMonth } from "@/lib/time";
 import { isDatabaseUrlConfigured, db, asIsoDate, asIsoTime, asIso, withDbRetry } from "@/lib/server/db";
 import { isSupabaseConfigured, isSupabaseJsConfigured, supabaseAdmin } from "@/lib/server/supabase";
@@ -45,11 +46,20 @@ export type MenuAsk = {
   createdAt: string;
 };
 
+export type MenuReplyRow = {
+  menuDate: string;
+  meals: MealKey[];
+  targetId: string;
+  questionNorm: string;
+  createdAt: string;
+};
+
 type MemoryDB = {
   menus: MenuCell[];
   settings: SendSetting[];
   logs: SendLog[];
   asks: MenuAsk[];
+  replies: MenuReplyRow[];
   plan: SendPlan;
 };
 
@@ -81,6 +91,7 @@ function seedMemory(): MemoryDB {
     settings: MEALS.map((meal) => ({ meal: meal.key, sendTime: meal.defaultTime, enabled: true })),
     logs: [],
     asks: [],
+    replies: [],
     plan: defaultSendPlan(),
   };
 }
@@ -90,6 +101,7 @@ const globalStore = globalThis as unknown as { __canteenMemory?: MemoryDB };
 function memory() {
   if (!globalStore.__canteenMemory) globalStore.__canteenMemory = seedMemory();
   if (!globalStore.__canteenMemory.asks) globalStore.__canteenMemory.asks = [];
+  if (!globalStore.__canteenMemory.replies) globalStore.__canteenMemory.replies = [];
   if (!globalStore.__canteenMemory.plan) globalStore.__canteenMemory.plan = defaultSendPlan();
   return globalStore.__canteenMemory;
 }
@@ -524,6 +536,115 @@ function memRecordMenuAsk(input: { menuDate: string; meal: MealKey; targetId: st
   return true;
 }
 
+function asMeals(value: unknown): MealKey[] {
+  const list = Array.isArray(value) ? value : [];
+  return list.filter((meal): meal is MealKey =>
+    meal === "breakfast" || meal === "lunch" || meal === "dinner" || meal === "late",
+  );
+}
+
+function toReplyKey(row: MenuReplyRow): MenuReplyDedupeKey {
+  return {
+    targetId: row.targetId,
+    menuDate: row.menuDate,
+    questionNorm: row.questionNorm,
+    meals: row.meals,
+    at: new Date(row.createdAt).getTime(),
+  };
+}
+
+async function sbListRecentMenuReplies(input: {
+  menuDate: string;
+  targetId: string;
+  questionNorm: string;
+  withinMs: number;
+}): Promise<MenuReplyDedupeKey[]> {
+  const since = new Date(Date.now() - input.withinMs).toISOString();
+  const { data, error } = await supabaseAdmin()
+    .from("menu_reply_log")
+    .select("menu_date,meals,target_id,question_norm,created_at")
+    .eq("menu_date", input.menuDate)
+    .eq("target_id", input.targetId)
+    .eq("question_norm", input.questionNorm)
+    .gte("created_at", since);
+  if (error) throw new Error(error.message);
+  return (data ?? []).map((row) =>
+    toReplyKey({
+      menuDate: asIsoDate(row.menu_date),
+      meals: asMeals(row.meals),
+      targetId: String(row.target_id ?? ""),
+      questionNorm: String(row.question_norm ?? ""),
+      createdAt: asIso(row.created_at),
+    }),
+  );
+}
+
+async function sbRecordMenuReply(input: { menuDate: string; meals: MealKey[]; targetId: string; questionNorm: string }) {
+  const { error } = await supabaseAdmin().from("menu_reply_log").insert({
+    menu_date: input.menuDate,
+    meals: input.meals,
+    target_id: input.targetId,
+    question_norm: input.questionNorm,
+  });
+  if (error) throw new Error(error.message);
+}
+
+async function pgListRecentMenuReplies(input: {
+  menuDate: string;
+  targetId: string;
+  questionNorm: string;
+  withinMs: number;
+}): Promise<MenuReplyDedupeKey[]> {
+  const since = new Date(Date.now() - input.withinMs).toISOString();
+  const rows = await db()`
+    SELECT menu_date, meals, target_id, question_norm, created_at
+    FROM public.menu_reply_log
+    WHERE menu_date = ${input.menuDate}::date
+      AND target_id = ${input.targetId}
+      AND question_norm = ${input.questionNorm}
+      AND created_at >= ${since}::timestamptz
+  `;
+  return rows.map((row) =>
+    toReplyKey({
+      menuDate: asIsoDate(row.menu_date),
+      meals: asMeals(row.meals),
+      targetId: String(row.target_id ?? ""),
+      questionNorm: String(row.question_norm ?? ""),
+      createdAt: asIso(row.created_at),
+    }),
+  );
+}
+
+async function pgRecordMenuReply(input: { menuDate: string; meals: MealKey[]; targetId: string; questionNorm: string }) {
+  await db()`
+    INSERT INTO public.menu_reply_log (menu_date, meals, target_id, question_norm)
+    VALUES (${input.menuDate}::date, ${input.meals}::text[], ${input.targetId}, ${input.questionNorm})
+  `;
+}
+
+function memListRecentMenuReplies(input: {
+  menuDate: string;
+  targetId: string;
+  questionNorm: string;
+  withinMs: number;
+}): MenuReplyDedupeKey[] {
+  const cutoff = Date.now() - input.withinMs;
+  return memory()
+    .replies.filter(
+      (row) =>
+        row.menuDate === input.menuDate &&
+        row.targetId === input.targetId &&
+        row.questionNorm === input.questionNorm &&
+        new Date(row.createdAt).getTime() >= cutoff,
+    )
+    .map(toReplyKey);
+}
+
+function memRecordMenuReply(input: { menuDate: string; meals: MealKey[]; targetId: string; questionNorm: string }) {
+  memory().replies.push({ ...input, createdAt: new Date().toISOString() });
+}
+
+
 
 function mapPlan(row: {
   mode: string;
@@ -716,6 +837,21 @@ export const store = {
     if (isDatabaseUrlConfigured()) return pgRecordMenuAsk(input);
     if (isSupabaseJsConfigured()) return sbRecordMenuAsk(input);
     return memRecordMenuAsk(input);
+  },
+  async listRecentMenuReplies(input: {
+    menuDate: string;
+    targetId: string;
+    questionNorm: string;
+    withinMs: number;
+  }) {
+    if (isDatabaseUrlConfigured()) return withDbRetry(() => pgListRecentMenuReplies(input));
+    if (isSupabaseJsConfigured()) return sbListRecentMenuReplies(input);
+    return memListRecentMenuReplies(input);
+  },
+  async recordMenuReply(input: { menuDate: string; meals: MealKey[]; targetId: string; questionNorm: string }) {
+    if (isDatabaseUrlConfigured()) return pgRecordMenuReply(input);
+    if (isSupabaseJsConfigured()) return sbRecordMenuReply(input);
+    return memRecordMenuReply(input);
   },
 };
 

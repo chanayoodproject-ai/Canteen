@@ -236,12 +236,47 @@ export function decideMenuQuestion(
     return { kind: "ask", date, meals: mentioned ? [mentioned] : [...MEAL_KEYS], day: "future" };
   }
 
+  // Same-day questions always get a reply, even after that meal's send time,
+  // because replies are free and people still ask after the morning card.
   if (mentioned) {
-    if (isMealPast(mentioned, now, settings)) return { kind: "past", date, meals: [mentioned] };
     return { kind: "ask", date, meals: [mentioned], day: "today" };
   }
 
   const upcoming = nextUpcomingMeal(now, settings);
-  if (!upcoming) return { kind: "past", date, meals: [] };
-  return { kind: "ask", date, meals: [upcoming], day: "today" };
+  if (upcoming) return { kind: "ask", date, meals: [upcoming], day: "today" };
+  return { kind: "ask", date, meals: [...MEAL_KEYS], day: "today" };
+}
+
+export const REPLY_DEDUPE_MS = 60_000;
+
+export type MenuReplyDedupeKey = {
+  targetId: string;
+  menuDate: string;
+  questionNorm: string;
+  meals: MealKey[];
+  at: number;
+};
+
+export function mealsKey(meals: MealKey[]) {
+  return MEAL_KEYS.filter((meal) => meals.includes(meal)).join(",");
+}
+
+/** True when the same group just asked the same question about the same meals. */
+export function isDuplicateMenuReply(
+  previous: MenuReplyDedupeKey[],
+  current: { targetId: string; menuDate: string; questionNorm: string; meals: MealKey[]; nowMs: number; windowMs?: number },
+) {
+  const windowMs = current.windowMs ?? REPLY_DEDUPE_MS;
+  const meals = mealsKey(current.meals);
+  return previous.some((row) => {
+    const age = current.nowMs - row.at;
+    return (
+      row.targetId === current.targetId &&
+      row.menuDate === current.menuDate &&
+      row.questionNorm === current.questionNorm &&
+      mealsKey(row.meals) === meals &&
+      age >= 0 &&
+      age < windowMs
+    );
+  });
 }
