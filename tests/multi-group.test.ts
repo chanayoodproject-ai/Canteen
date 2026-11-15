@@ -40,7 +40,7 @@ test("per-meal summary across groups", () => {
 test("menu question marks only the asking group", () => {
   assert.equal(questionTargetId({ type: "group", groupId: "Cabc" }), "Cabc");
   assert.equal(questionTargetId({ type: "room", roomId: "Rxyz" }), "Rxyz");
-  assert.equal(questionTargetId({ type: "user", userId: "U1" }), "");
+  assert.equal(questionTargetId({ type: "user", userId: "U1" }), "U1");
 });
 
 test("send logs dedupe per (date, meal, group)", async () => {

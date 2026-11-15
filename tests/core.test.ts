@@ -2,7 +2,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { addDays, bangkokNow, daysInMonth, defaultUploadMonth, shiftMonth, hasTimeArrived } from "@/lib/time";
 import { cleanDishText, ocrToDrafts, parseCsv, tableToDrafts } from "@/lib/parse-menu";
-import { decideMenuQuestion } from "@/lib/menu-question";
+import { decideMenuQuestion, parseMenuQuestionDate } from "@/lib/menu-question";
+import { skipReasonForTarget } from "@/lib/server/send";
+import { store } from "@/lib/server/store";
 import { buildFlexMessage, menuLineShouldWrap, menuTextSize, thaiDisplayLength } from "@/lib/flex";
 import { isTransientDbError, withDbRetry } from "@/lib/server/db";
 
@@ -66,13 +68,105 @@ test("OCR output conversion cleans prefixes and drops invalid days", () => {
 });
 
 test("menu question decisions", () => {
-  const morning = bangkokNow(new Date("2026-11-13T02:00:00Z")); // 09:00
-  assert.deepEqual(decideMenuQuestion("มื้อเที่ยงมีอะไรกิน", morning, settings), { kind: "ask", meal: "lunch" });
+  const morning = bangkokNow(new Date("2026-11-13T02:00:00Z")); // Friday 09:00 BKK
+  assert.deepEqual(decideMenuQuestion("มื้อเที่ยงมีอะไรกิน", morning, settings), {
+    kind: "ask",
+    date: "2026-11-13",
+    meals: ["lunch"],
+    day: "today",
+  });
   assert.deepEqual(decideMenuQuestion("เช้านี้มีอะไรกิน", bangkokNow(new Date("2026-11-13T10:00:00Z")), settings), {
-    kind: "over",
-    meal: "breakfast",
+    kind: "past",
+    date: "2026-11-13",
+    meals: ["breakfast"],
   });
   assert.deepEqual(decideMenuQuestion("สวัสดี", morning, settings), { kind: "ignore" });
+});
+
+test("menu questions understand Thai dates and stay silent about the past", () => {
+  const fridayMorning = bangkokNow(new Date("2026-11-13T02:00:00Z")); // 09:00 BKK, Friday
+  const fridayAfternoon = bangkokNow(new Date("2026-11-13T07:00:00Z")); // 14:00 BKK
+
+  assert.equal(parseMenuQuestionDate("พรุ่งนี้กินอะไร", fridayMorning).date, "2026-11-14");
+  assert.equal(parseMenuQuestionDate("มะรืนนี้มื้อเย็น", fridayMorning).date, "2026-11-15");
+  assert.equal(parseMenuQuestionDate("เมื่อวานกินอะไร", fridayMorning).date, "2026-11-12");
+  assert.equal(parseMenuQuestionDate("วันที่ 20 มื้อเที่ยง", fridayMorning).date, "2026-11-20");
+  assert.equal(parseMenuQuestionDate("วันที่ 10", fridayMorning).date, "2026-11-10");
+  assert.equal(parseMenuQuestionDate("20 พ.ย. 2569", fridayMorning).date, "2026-11-20");
+  assert.equal(parseMenuQuestionDate("20/11/69 กินอะไร", fridayMorning).date, "2026-11-20");
+  assert.equal(parseMenuQuestionDate("2 มกราคม", fridayMorning).date, "2027-01-02");
+  assert.equal(parseMenuQuestionDate("วันจันทร์กินอะไร", fridayMorning).date, "2026-11-16");
+  assert.equal(parseMenuQuestionDate("วันศุกร์กินอะไร", fridayMorning).date, "2026-11-13");
+  assert.equal(parseMenuQuestionDate("วันจันทร์นี้", fridayMorning).date, "2026-11-09");
+  assert.equal(parseMenuQuestionDate("วันจันทร์หน้า", fridayMorning).date, "2026-11-16");
+  assert.equal(parseMenuQuestionDate("วันศุกร์ที่แล้ว", fridayMorning).date, "2026-11-06");
+
+  assert.deepEqual(decideMenuQuestion("พรุ่งนี้กินอะไร", fridayMorning, settings), {
+    kind: "ask",
+    date: "2026-11-14",
+    meals: ["breakfast", "lunch", "dinner", "late"],
+    day: "future",
+  });
+  assert.deepEqual(decideMenuQuestion("วันที่ 20 มื้อเที่ยง", fridayMorning, settings), {
+    kind: "ask",
+    date: "2026-11-20",
+    meals: ["lunch"],
+    day: "future",
+  });
+  assert.deepEqual(decideMenuQuestion("เมื่อวานกินอะไร", fridayMorning, settings), {
+    kind: "past",
+    date: "2026-11-12",
+    meals: [],
+  });
+  assert.deepEqual(decideMenuQuestion("วันที่ 10 มื้อเย็นกินอะไร", fridayMorning, settings), {
+    kind: "past",
+    date: "2026-11-10",
+    meals: ["dinner"],
+  });
+  // Unspecified meal today: the next meal that has not been sent yet (lunch at 09:00, dinner at 14:00).
+  assert.deepEqual(decideMenuQuestion("มีอะไรกิน", fridayMorning, settings), {
+    kind: "ask",
+    date: "2026-11-13",
+    meals: ["lunch"],
+    day: "today",
+  });
+  assert.deepEqual(decideMenuQuestion("มีอะไรกิน", fridayAfternoon, settings), {
+    kind: "ask",
+    date: "2026-11-13",
+    meals: ["dinner"],
+    day: "today",
+  });
+  assert.deepEqual(decideMenuQuestion("มื้อเย็นกินอะไร", fridayAfternoon, settings), {
+    kind: "ask",
+    date: "2026-11-13",
+    meals: ["dinner"],
+    day: "today",
+  });
+  assert.deepEqual(decideMenuQuestion("มื้อเที่ยงกินอะไร", fridayAfternoon, settings), {
+    kind: "past",
+    date: "2026-11-13",
+    meals: ["lunch"],
+  });
+  assert.equal(decideMenuQuestion("วันนี้ไปไหน", fridayMorning, settings).kind, "ignore");
+});
+
+test("cron skips a group that already asked today's meal", async () => {
+  assert.equal(skipReasonForTarget({ asked: true, log: null }), "กลุ่มนี้ถามเมนูไปแล้ว");
+  assert.equal(skipReasonForTarget({ asked: false, log: { status: "sent", detail: "ส่งเข้า LINE แล้ว" } }), "ส่งมื้อนี้ไปแล้ววันนี้");
+  assert.equal(skipReasonForTarget({ asked: false, log: { status: "claimed", detail: "กำลังส่ง" } }), "มีงานส่งมื้อนี้อยู่แล้ว");
+  assert.equal(skipReasonForTarget({ asked: false, log: { status: "sent", detail: "ตอบคำถามในแชทแล้ว" } }), "กลุ่มนี้ถามเมนูไปแล้ว");
+  assert.equal(skipReasonForTarget({ asked: false, log: null }), null);
+
+  const key = { menuDate: "2031-03-04", meal: "dinner" as const, targetId: "Cg-ask-1" };
+  assert.equal(await store.hasMenuAsk(key.menuDate, key.meal, key.targetId), false);
+  assert.equal(await store.recordMenuAsk(key), true);
+  assert.equal(await store.recordMenuAsk(key), false);
+  assert.equal(await store.hasMenuAsk(key.menuDate, key.meal, key.targetId), true);
+  assert.equal(await store.hasMenuAsk(key.menuDate, key.meal, "Cg-other"), false);
+  assert.equal(
+    skipReasonForTarget({ asked: await store.hasMenuAsk(key.menuDate, key.meal, key.targetId), log: null }),
+    "กลุ่มนี้ถามเมนูไปแล้ว",
+  );
 });
 
 test("flex message shows large menu text without rating buttons", () => {
