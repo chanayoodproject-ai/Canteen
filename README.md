@@ -49,8 +49,10 @@ npx supabase db reset
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | คีย์ anon เบราว์เซอร์ไม่ได้ใช้เขียนข้อมูล เพราะ RLS ปิดไว้ |
 | `SUPABASE_SERVICE_ROLE_KEY` | เซิร์ฟเวอร์อ่านเขียนทุกตาราง |
 | `CRON_SECRET` | รหัสเรียก `/api/cron/send` |
-| `LINE_CHANNEL_ACCESS_TOKEN` | ส่งข้อความ |
-| `LINE_CHANNEL_SECRET` | ตรวจลายเซ็น webhook |
+| `LINE_CHANNEL_ACCESS_TOKEN` | ส่งข้อความของบอท 1 |
+| `LINE_CHANNEL_SECRET` | ตรวจลายเซ็น webhook ของบอท 1 (`/api/line/webhook`) |
+| `LINE_CHANNEL_ACCESS_TOKEN_2` | ส่งข้อความของบอท 2 (ไม่บังคับ จนกว่าจะเปิดบัญชีที่สอง) |
+| `LINE_CHANNEL_SECRET_2` | ตรวจลายเซ็น webhook ของบอท 2 (`/api/line/webhook/2`) |
 | `LINE_TARGET_ID` | รหัสผู้ใช้ กลุ่ม ห้อง หรือคำว่า `broadcast` |
 | `AI_VISION_MODEL` | ไม่บังคับ เปลี่ยนโมเดลอ่านภาพ (ค่าเริ่มต้น `google/gemini-3-flash` ผ่าน Vercel AI Gateway ใช้ OIDC อัตโนมัติบน Vercel) |
 | `GOOGLE_GENERATIVE_AI_API_KEY` | คีย์ Gemini ฟรีสำหรับอ่านภาพ (ทางหลัก) ใส่ใน env หรือเก็บใน `public.app_secrets` ก็ได้ |
@@ -78,7 +80,7 @@ npx supabase db reset
 1. สร้าง Provider และ Messaging API channel ที่ [LINE Developers](https://developers.line.biz/)
 2. ออก Channel access token และจด Channel secret
 3. ใส่สามตัวแปร LINE ในสภาพแวดล้อมของเซิร์ฟเวอร์
-4. ตั้ง Webhook URL เป็น `https://โดเมนของคุณ/api/line/webhook` แล้วกด Verify
+4. ตั้ง Webhook URL ของบอท 1 เป็น `https://โดเมนของคุณ/api/line/webhook` และของบอท 2 เป็น `https://โดเมนของคุณ/api/line/webhook/2` แล้วกด Verify
 5. เปิด Use webhook
 6. `LINE_TARGET_ID` เป็นรหัสผู้ใช้ (`U...`) กลุ่ม (`C...`) ห้อง (`R...`) หรือ `broadcast`
 7. ในหน้าตั้งค่า LINE ของแอป กดส่งทดสอบได้

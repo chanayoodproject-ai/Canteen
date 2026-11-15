@@ -103,3 +103,4 @@ begin
 end $$;
 
 -- See migrations/20261115000000_menu_asks.sql for menu_asks (per-group, per-meal question receipts).
+-- See migrations/20261115000001_line_bot_2.sql for bot_1/bot_2 on line_targets and send_logs.bot.
