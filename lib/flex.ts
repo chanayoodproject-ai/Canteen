@@ -130,3 +130,26 @@ export function buildFlexMessage(input: { date: string; meal: MealKey; dishText:
     },
   };
 }
+
+export function buildMenuFlex(input: {
+  date: string;
+  meals: { meal: MealKey; dishText: string }[];
+  logoUrl?: string;
+}): FlexBubble {
+  const items = input.meals.filter((item) => item.dishText.trim());
+  if (items.length <= 1) {
+    const one = items[0] ?? input.meals[0] ?? { meal: "lunch" as MealKey, dishText: "" };
+    return buildFlexMessage({ date: input.date, meal: one.meal, dishText: one.dishText, logoUrl: input.logoUrl });
+  }
+  const alt = items
+    .map((item) => `${MEAL_MAP[item.meal].full} ${menuLines(item.dishText).join(" ")}`)
+    .join(" · ");
+  return {
+    type: "flex",
+    altText: `${formatThaiDateShort(input.date)} ${alt}`.slice(0, 380),
+    contents: {
+      type: "carousel",
+      contents: items.map((item) => buildFlexMessage({ date: input.date, meal: item.meal, dishText: item.dishText, logoUrl: input.logoUrl }).contents),
+    },
+  };
+}

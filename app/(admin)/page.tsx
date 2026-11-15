@@ -24,7 +24,7 @@ type Dashboard = {
   todayLabel: string;
   greeting: string;
   meals: MealCard[];
-  next: { date: string; meal: MealKey; sendTime: string; due: boolean } | null;
+  next: { date: string; meal: MealKey; sendTime: string; due: boolean; label?: string; meals?: MealKey[] } | null;
   logs: { id: string; menuDate: string; meal: MealKey; status: string; detail: string | null; createdAt: string }[];
   lineConfigured: boolean;
   activeGroups?: number;
@@ -111,7 +111,7 @@ export default function HomePage() {
           {next ? (
             <>
               <p className="mt-2 text-2xl font-bold">
-                {MEAL_MAP[next.meal].full} · {next.sendTime}
+                {next.label || MEAL_MAP[next.meal].full} · {next.sendTime}
               </p>
               <p className="mt-1 text-sm text-[#F6E2CF]">
                 {next.date === data.today
@@ -125,7 +125,7 @@ export default function HomePage() {
             <p className="mt-2">ยังไม่เปิดการส่งมื้อใด</p>
           )}
           <Link href="/schedule" className="mt-4 inline-block text-sm text-[#F0C27A] underline-offset-4 hover:underline">
-            ตั้งเวลาทั้ง 4 มื้อ
+            ตั้งเวลาส่งเมนู
           </Link>
         </aside>
       </section>

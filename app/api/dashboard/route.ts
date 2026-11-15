@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
-import { MEALS, type MealKey } from "@/lib/meals";
-import { bangkokNow, describeSend, formatThaiDate, greeting, nextSend } from "@/lib/time";
+import { MEALS } from "@/lib/meals";
+import { nextSlot, planInEffect, slotsFromPlan } from "@/lib/send-plan";
+import { bangkokNow, describeSend, formatThaiDate, greeting } from "@/lib/time";
 import { lineConfigured } from "@/lib/server/supabase";
 import { store } from "@/lib/server/store";
 import { countActiveTargets } from "@/lib/server/line-targets";
@@ -12,11 +13,12 @@ export const maxDuration = 15;
 export async function GET() {
   try {
     const now = bangkokNow();
-    const [cells, settings, logs, activeGroups] = await Promise.all([
+    const [cells, settings, logs, activeGroups, plan] = await Promise.all([
       store.getMonth(now.year, now.month),
       store.getSettings(),
       store.listLogs(8),
       countActiveTargets(),
+      store.getPlan(),
     ]);
     const todayCells = cells.filter((cell) => cell.day === now.day);
     const meals = MEALS.map((meta) => {
@@ -42,10 +44,22 @@ export async function GET() {
       };
     });
     const sentMeals = meals.filter((meal) => meal.state === "sent").map((meal) => meal.meal);
-    const todayHasMenu = Object.fromEntries(
-      MEALS.map((meta) => [meta.key, Boolean(todayCells.find((cell) => cell.meal === meta.key)?.dishText.trim())]),
-    ) as Record<MealKey, boolean>;
-    const next = nextSend({ now, settings, sentMeals, todayHasMenu });
+    const effective = planInEffect(plan, now.iso);
+    const slots = slotsFromPlan(effective, settings);
+    const sentIds = slots
+      .filter((slot) => slot.meals.some((meal) => sentMeals.includes(meal)))
+      .map((slot) => slot.id);
+    const upcoming = nextSlot({ now, slots, sentIds });
+    const next = upcoming
+      ? {
+          date: upcoming.date,
+          meal: upcoming.slot.meals[0],
+          meals: upcoming.slot.meals,
+          label: upcoming.slot.label,
+          sendTime: upcoming.slot.time,
+          due: upcoming.due,
+        }
+      : null;
     return NextResponse.json({
       ok: true,
       today: now.iso,
@@ -53,6 +67,7 @@ export async function GET() {
       greeting: greeting(now),
       meals,
       next,
+      plan: effective,
       logs,
       lineConfigured: await lineConfigured(),
       activeGroups,

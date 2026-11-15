@@ -1,19 +1,29 @@
-import { buildFlexMessage } from "@/lib/flex";
+import { buildMenuFlex } from "@/lib/flex";
 import type { BotId } from "@/lib/line-bots";
 import { signatureMatches } from "@/lib/line-bots";
 import type { MealKey } from "@/lib/meals";
 import { isGoneFromTarget } from "@/lib/line-target-plan";
+import { DEFAULT_MEMBER_COUNT } from "@/lib/send-plan";
 import { resolveLineAccessToken, resolveLineChannelSecret } from "@/lib/server/app-secrets";
 import { resolveLineTarget } from "@/lib/server/line-targets";
 import { lineConfigured, maskTarget } from "@/lib/server/supabase";
 
-export async function pushFlex(input: { date: string; meal: MealKey; dishText: string; to?: string; bot?: BotId }) {
+export async function pushFlex(input: {
+  date: string;
+  meal?: MealKey;
+  dishText?: string;
+  meals?: { meal: MealKey; dishText: string }[];
+  to?: string;
+  bot?: BotId;
+}) {
   const bot: BotId = input.bot ?? "1";
   const token = await resolveLineAccessToken(bot);
   const target = input.to ?? (await resolveLineTarget());
   const base = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "");
-  const message = buildFlexMessage({
-    ...input,
+  const meals = input.meals ?? (input.meal ? [{ meal: input.meal, dishText: input.dishText ?? "" }] : []);
+  const message = buildMenuFlex({
+    date: input.date,
+    meals,
     logoUrl: base ? `${base}/brand/logo-mark.png` : undefined,
   });
   if (!(await lineConfigured())) {
@@ -121,4 +131,44 @@ export async function lineBotQuota(bot: BotId = "1"): Promise<LineQuota> {
 export async function verifyLineSignature(body: string, signature: string | null, bot: BotId = "1") {
   const secret = await resolveLineChannelSecret(bot);
   return signatureMatches(body, signature, secret);
+}
+
+const MEMBER_CACHE_MS = 10 * 60 * 1000;
+let memberCache: { count: number; at: number } | null = null;
+
+export async function lineGroupMemberCount(targetId: string, bot: BotId = "1"): Promise<number | null> {
+  const token = await resolveLineAccessToken(bot);
+  if (!token || !targetId) return null;
+  const kind = targetId.startsWith("R") ? "room" : "group";
+  const response = await fetch(`https://api.line.me/v2/bot/${kind}/${encodeURIComponent(targetId)}/members/count`, {
+    headers: { Authorization: `Bearer ${token}` },
+    signal: AbortSignal.timeout(8_000),
+  }).catch(() => null);
+  if (!response?.ok) return null;
+  const body = (await response.json()) as { count?: number };
+  return typeof body.count === "number" ? body.count : null;
+}
+
+export async function cachedActiveMemberCount(
+  targets: { id: string; bots: BotId[] }[],
+): Promise<{ count: number; source: "line" | "cache" | "fallback" }> {
+  if (memberCache && Date.now() - memberCache.at < MEMBER_CACHE_MS) {
+    return { count: memberCache.count, source: "cache" };
+  }
+  let total = 0;
+  let ok = false;
+  for (const target of targets) {
+    const bot = target.bots[0] ?? "1";
+    const count = await lineGroupMemberCount(target.id, bot);
+    if (count != null) {
+      total += count;
+      ok = true;
+    }
+  }
+  if (ok) {
+    memberCache = { count: total, at: Date.now() };
+    return { count: total, source: "line" };
+  }
+  if (memberCache) return { count: memberCache.count, source: "cache" };
+  return { count: DEFAULT_MEMBER_COUNT, source: "fallback" };
 }

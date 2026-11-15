@@ -1,6 +1,7 @@
 import november from "@/data/november-2026.json";
 import type { BotId } from "@/lib/line-bots";
 import { MEALS, MEAL_KEYS, type MealKey } from "@/lib/meals";
+import { defaultSendPlan, normalizeSendPlan, type SendPlan } from "@/lib/send-plan";
 import { daysInMonth } from "@/lib/time";
 import { isDatabaseUrlConfigured, db, asIsoDate, asIsoTime, asIso, withDbRetry } from "@/lib/server/db";
 import { isSupabaseConfigured, isSupabaseJsConfigured, supabaseAdmin } from "@/lib/server/supabase";
@@ -49,6 +50,7 @@ type MemoryDB = {
   settings: SendSetting[];
   logs: SendLog[];
   asks: MenuAsk[];
+  plan: SendPlan;
 };
 
 function seedMemory(): MemoryDB {
@@ -79,6 +81,7 @@ function seedMemory(): MemoryDB {
     settings: MEALS.map((meal) => ({ meal: meal.key, sendTime: meal.defaultTime, enabled: true })),
     logs: [],
     asks: [],
+    plan: defaultSendPlan(),
   };
 }
 
@@ -87,6 +90,7 @@ const globalStore = globalThis as unknown as { __canteenMemory?: MemoryDB };
 function memory() {
   if (!globalStore.__canteenMemory) globalStore.__canteenMemory = seedMemory();
   if (!globalStore.__canteenMemory.asks) globalStore.__canteenMemory.asks = [];
+  if (!globalStore.__canteenMemory.plan) globalStore.__canteenMemory.plan = defaultSendPlan();
   return globalStore.__canteenMemory;
 }
 
@@ -520,6 +524,93 @@ function memRecordMenuAsk(input: { menuDate: string; meal: MealKey; targetId: st
   return true;
 }
 
+
+function mapPlan(row: {
+  mode: string;
+  daily_time: string;
+  first_meals: string[] | null;
+  first_time: string;
+  second_meals: string[] | null;
+  second_time: string;
+  quota_base: number;
+  effective_from: string;
+}): SendPlan {
+  return normalizeSendPlan({
+    mode: row.mode as SendPlan["mode"],
+    dailyTime: hhmm(String(row.daily_time)),
+    firstMeals: (row.first_meals ?? []).filter((meal): meal is MealKey =>
+      meal === "breakfast" || meal === "lunch" || meal === "dinner" || meal === "late",
+    ),
+    firstTime: hhmm(String(row.first_time)),
+    secondMeals: (row.second_meals ?? []).filter((meal): meal is MealKey =>
+      meal === "breakfast" || meal === "lunch" || meal === "dinner" || meal === "late",
+    ),
+    secondTime: hhmm(String(row.second_time)),
+    quotaBase: Number(row.quota_base),
+    effectiveFrom: asIsoDate(row.effective_from),
+  });
+}
+
+async function sbGetPlan(): Promise<SendPlan> {
+  const { data, error } = await supabaseAdmin()
+    .from("send_plan")
+    .select("mode,daily_time,first_meals,first_time,second_meals,second_time,quota_base,effective_from")
+    .eq("id", 1)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return data ? mapPlan(data) : defaultSendPlan();
+}
+
+async function sbSavePlan(plan: SendPlan) {
+  const { error } = await supabaseAdmin().from("send_plan").upsert(
+    {
+      id: 1,
+      mode: plan.mode,
+      daily_time: plan.dailyTime,
+      first_meals: plan.firstMeals,
+      first_time: plan.firstTime,
+      second_meals: plan.secondMeals,
+      second_time: plan.secondTime,
+      quota_base: plan.quotaBase,
+      effective_from: plan.effectiveFrom,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "id" },
+  );
+  if (error) throw new Error(error.message);
+}
+
+async function pgGetPlan(): Promise<SendPlan> {
+  const rows = await db()`
+    SELECT mode, daily_time, first_meals, first_time, second_meals, second_time, quota_base, effective_from
+    FROM public.send_plan
+    WHERE id = 1
+    LIMIT 1
+  `;
+  return rows[0] ? mapPlan(rows[0] as Parameters<typeof mapPlan>[0]) : defaultSendPlan();
+}
+
+async function pgSavePlan(plan: SendPlan) {
+  await db()`
+    INSERT INTO public.send_plan (
+      id, mode, daily_time, first_meals, first_time, second_meals, second_time, quota_base, effective_from, updated_at
+    ) VALUES (
+      1, ${plan.mode}, ${plan.dailyTime}::time, ${plan.firstMeals}::text[], ${plan.firstTime}::time,
+      ${plan.secondMeals}::text[], ${plan.secondTime}::time, ${plan.quotaBase}, ${plan.effectiveFrom}::date, now()
+    )
+    ON CONFLICT (id) DO UPDATE SET
+      mode = excluded.mode,
+      daily_time = excluded.daily_time,
+      first_meals = excluded.first_meals,
+      first_time = excluded.first_time,
+      second_meals = excluded.second_meals,
+      second_time = excluded.second_time,
+      quota_base = excluded.quota_base,
+      effective_from = excluded.effective_from,
+      updated_at = now()
+  `;
+}
+
 export const store = {
   usingSupabase: isSupabaseConfigured,
   async knownDishTexts(): Promise<string[]> {
@@ -555,6 +646,17 @@ export const store = {
     if (isDatabaseUrlConfigured()) return withDbRetry(() => pgSaveSettings(settings));
     if (isSupabaseJsConfigured()) return sbSaveSettings(settings);
     memory().settings = settings.map((item) => ({ ...item, sendTime: hhmm(item.sendTime) }));
+  },
+  async getPlan() {
+    if (isDatabaseUrlConfigured()) return withDbRetry(() => pgGetPlan());
+    if (isSupabaseJsConfigured()) return sbGetPlan();
+    return normalizeSendPlan(memory().plan);
+  },
+  async savePlan(plan: SendPlan) {
+    const next = normalizeSendPlan(plan);
+    if (isDatabaseUrlConfigured()) return withDbRetry(() => pgSavePlan(next));
+    if (isSupabaseJsConfigured()) return sbSavePlan(next);
+    memory().plan = next;
   },
   async listLogs(limit = 40) {
     if (isDatabaseUrlConfigured()) return withDbRetry(() => pgLogs(limit));
