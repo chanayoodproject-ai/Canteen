@@ -1,7 +1,9 @@
+import { fallbackSendBot, pickSendBot, type BotId } from "@/lib/line-bots";
 import { MEAL_MAP, type MealKey } from "@/lib/meals";
 import { bangkokNow, hasTimeArrived, timeToMinutes, type BangkokNow } from "@/lib/time";
+import { configuredLineBots } from "@/lib/server/app-secrets";
 import { pushFlex } from "@/lib/server/line";
-import { listSendTargets, markLineTargetInactive, resolveLineTarget } from "@/lib/server/line-targets";
+import { listSendTargetStates, markLineBotLeft, resolveLineTarget } from "@/lib/server/line-targets";
 import { summarizeTargets, type TargetOutcome } from "@/lib/line-target-plan";
 import { lineConfigured, maskTarget } from "@/lib/server/supabase";
 import { dishOn, store } from "@/lib/server/store";
@@ -42,8 +44,8 @@ export async function runSend(options: {
   const [settings, monthCells] = await Promise.all([store.getSettings(), store.getMonth(year, month)]);
   const meals = options.onlyMeal ? settings.filter((item) => item.meal === options.onlyMeal) : settings;
   const results: { meal: MealKey; status: string; detail: string; targets?: TargetOutcome[] }[] = [];
-  let targetsCache: string[] | null = null;
-  const sendTargets = async () => (targetsCache ??= await listSendTargets());
+  let targetsCache: Awaited<ReturnType<typeof listSendTargetStates>> | null = null;
+  const sendTargets = async () => (targetsCache ??= await listSendTargetStates());
 
   for (const setting of meals) {
     const dishText = dishOn(monthCells, date, setting.meal);
@@ -111,8 +113,21 @@ export async function runSend(options: {
 
     // Every active LINE group/room gets its own card; dedupe and claims are per group.
     const outcomes: TargetOutcome[] = [];
-    for (const targetId of await sendTargets()) {
-      outcomes.push(await sendToTarget({ date, meal: setting.meal, label, dishText, targetId, dryRun: options.dryRun }));
+    const configured = await configuredLineBots();
+    for (const target of await sendTargets()) {
+      outcomes.push(
+        await sendToTarget({
+          date,
+          meal: setting.meal,
+          label,
+          dishText,
+          targetId: target.id,
+          botsInGroup: target.bots,
+          bot1Configured: configured.bot1,
+          bot2Configured: configured.bot2,
+          dryRun: options.dryRun,
+        }),
+      );
     }
     const summary = summarizeTargets(outcomes);
     results.push({ meal: setting.meal, ...summary, targets: outcomes });
@@ -127,6 +142,9 @@ async function sendToTarget(input: {
   label: string;
   dishText: string;
   targetId: string;
+  botsInGroup: BotId[];
+  bot1Configured: boolean;
+  bot2Configured: boolean;
   dryRun?: boolean;
 }): Promise<TargetOutcome> {
   const { date, meal, label, dishText, targetId } = input;
@@ -137,24 +155,71 @@ async function sendToTarget(input: {
   if (skip) {
     return { target: masked, status: "skipped", detail: skip };
   }
-  if (input.dryRun) return { target: masked, status: "would_send", detail: `จะส่ง${label}เข้ากลุ่ม ${masked}` };
+  const pickInput = {
+    date,
+    bot1Configured: input.bot1Configured,
+    bot2Configured: input.bot2Configured,
+    botsInGroup: input.botsInGroup,
+  };
+  const bot = pickSendBot(pickInput);
+  if (!bot) {
+    return { target: masked, status: "skipped", detail: "ยังไม่ได้ตั้งค่า LINE" };
+  }
+  if (input.dryRun) {
+    return { target: masked, status: "would_send", detail: `จะส่ง${label}เข้ากลุ่ม ${masked} ด้วยบอท ${bot}` };
+  }
 
-  let claim = await store.insertLog({ menuDate: date, meal, status: "claimed", target: masked, targetId, detail: "กำลังส่ง" });
+  let claim = await store.insertLog({
+    menuDate: date,
+    meal,
+    status: "claimed",
+    target: masked,
+    targetId,
+    bot,
+    detail: "กำลังส่ง",
+  });
   if (!claim) {
     const open = await store.latestLog(date, meal, ["claimed", "sent"], targetId);
     if (open?.status === "claimed" && Date.now() - new Date(open.createdAt).getTime() > STALE_CLAIM_MS) {
       await store.updateLog(open.id, { status: "failed", detail: "ค้างระหว่างส่ง จึงลองใหม่" });
-      claim = await store.insertLog({ menuDate: date, meal, status: "claimed", target: masked, targetId, detail: "กำลังส่ง" });
+      claim = await store.insertLog({
+        menuDate: date,
+        meal,
+        status: "claimed",
+        target: masked,
+        targetId,
+        bot,
+        detail: "กำลังส่ง",
+      });
     }
     if (!claim) return { target: masked, status: "skipped", detail: "มีงานส่งมื้อนี้อยู่แล้ว" };
   }
-  const pushed = await pushFlex({ date, meal, dishText, to: targetId });
-  if (!pushed.ok) {
-    if (pushed.gone) await markLineTargetInactive(targetId);
-    const detail = pushed.gone ? "บอทไม่ได้อยู่ในกลุ่มนี้แล้ว หยุดส่งให้กลุ่มนี้" : pushed.error || "ส่งไม่สำเร็จ";
+
+  const first = await pushFlex({ date, meal, dishText, to: targetId, bot });
+  if (first.ok) {
+    await store.updateLog(claim.id, { status: "sent", detail: `ส่งเข้า LINE แล้วด้วยบอท ${bot}`, bot });
+    return { target: masked, status: "sent", detail: `ส่งเข้า LINE แล้วด้วยบอท ${bot}` };
+  }
+
+  if (first.gone) await markLineBotLeft(targetId, bot);
+  const fallback = fallbackSendBot(pickInput, bot);
+  if (fallback) {
+    const second = await pushFlex({ date, meal, dishText, to: targetId, bot: fallback });
+    if (second.ok) {
+      await store.updateLog(claim.id, {
+        status: "sent",
+        detail: `บอท ${bot} ส่งไม่สำเร็จ จึงส่งด้วยบอท ${fallback}`,
+        bot: fallback,
+      });
+      return { target: masked, status: "sent", detail: `ส่งเข้า LINE แล้วด้วยบอท ${fallback}` };
+    }
+    if (second.gone) await markLineBotLeft(targetId, fallback);
+    const detail = second.gone ? "บอทไม่ได้อยู่ในกลุ่มนี้แล้ว หยุดส่งให้กลุ่มนี้" : second.error || first.error || "ส่งไม่สำเร็จ";
     await store.updateLog(claim.id, { status: "failed", detail });
     return { target: masked, status: "failed", detail };
   }
-  await store.updateLog(claim.id, { status: "sent", detail: "ส่งเข้า LINE แล้ว" });
-  return { target: masked, status: "sent", detail: "ส่งเข้า LINE แล้ว" };
+
+  const detail = first.gone ? "บอทไม่ได้อยู่ในกลุ่มนี้แล้ว หยุดส่งให้กลุ่มนี้" : first.error || "ส่งไม่สำเร็จ";
+  await store.updateLog(claim.id, { status: "failed", detail });
+  return { target: masked, status: "failed", detail };
 }

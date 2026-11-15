@@ -1,4 +1,5 @@
 import november from "@/data/november-2026.json";
+import type { BotId } from "@/lib/line-bots";
 import { MEALS, MEAL_KEYS, type MealKey } from "@/lib/meals";
 import { daysInMonth } from "@/lib/time";
 import { isDatabaseUrlConfigured, db, asIsoDate, asIsoTime, asIso, withDbRetry } from "@/lib/server/db";
@@ -29,6 +30,8 @@ export type SendLog = {
   target: string | null;
   /** Raw LINE group/room id this log belongs to ('' = account-wide / legacy). Server-only, never shown. */
   targetId?: string;
+  /** Which Official Account sent this push: "1" or "2". */
+  bot?: BotId | null;
   detail: string | null;
   createdAt: string;
 };
@@ -130,6 +133,10 @@ function mapMenu(row: {
   };
 }
 
+function asBot(value: unknown): BotId | null {
+  return value === "1" || value === "2" ? value : null;
+}
+
 function mapLog(row: {
   id: string;
   menu_date: string;
@@ -139,6 +146,7 @@ function mapLog(row: {
   detail: string | null;
   created_at: string;
   target_id?: string;
+  bot?: string | null;
 }): SendLog {
   return {
     id: row.id,
@@ -147,6 +155,7 @@ function mapLog(row: {
     status: row.status,
     target: row.target,
     targetId: row.target_id,
+    bot: asBot(row.bot),
     detail: row.detail,
     createdAt: row.created_at,
   };
@@ -221,7 +230,7 @@ async function sbSaveSettings(settings: SendSetting[]) {
 async function sbLogs(limit: number) {
   const { data, error } = await supabaseAdmin()
     .from("send_logs")
-    .select("id,menu_date,meal,status,target,detail,created_at")
+    .select("id,menu_date,meal,status,target,detail,created_at,bot")
     .order("created_at", { ascending: false })
     .limit(limit);
   if (error) throw new Error(error.message);
@@ -231,7 +240,7 @@ async function sbLogs(limit: number) {
 async function sbLatest(menuDate: string, meal: MealKey, statuses: SendStatus[], targetId?: string) {
   let query = supabaseAdmin()
     .from("send_logs")
-    .select("id,menu_date,meal,status,target,target_id,detail,created_at")
+    .select("id,menu_date,meal,status,target,target_id,detail,created_at,bot")
     .eq("menu_date", menuDate)
     .eq("meal", meal)
     .in("status", statuses);
@@ -254,8 +263,9 @@ async function sbInsertLog(input: Omit<SendLog, "id" | "createdAt">) {
       target: input.target,
       target_id: input.targetId ?? "",
       detail: input.detail,
+      bot: input.bot ?? null,
     })
-    .select("id,menu_date,meal,status,target,target_id,detail,created_at")
+    .select("id,menu_date,meal,status,target,target_id,detail,created_at,bot")
     .single();
   if (error) {
     if (error.code === "23505") return null;
@@ -264,8 +274,10 @@ async function sbInsertLog(input: Omit<SendLog, "id" | "createdAt">) {
   return mapLog(data);
 }
 
-async function sbUpdateLog(id: string, patch: { status: SendStatus; detail: string | null }) {
-  const { error } = await supabaseAdmin().from("send_logs").update(patch).eq("id", id);
+async function sbUpdateLog(id: string, patch: { status: SendStatus; detail: string | null; bot?: BotId | null }) {
+  const body: Record<string, unknown> = { status: patch.status, detail: patch.detail };
+  if (patch.bot !== undefined) body.bot = patch.bot;
+  const { error } = await supabaseAdmin().from("send_logs").update(body).eq("id", id);
   if (error) throw new Error(error.message);
 }
 
@@ -364,12 +376,13 @@ function mapPgLog(row: Record<string, unknown>): SendLog {
     detail: row.detail == null ? null : String(row.detail),
     created_at: asIso(row.created_at),
     target_id: row.target_id == null ? undefined : String(row.target_id),
+    bot: row.bot == null ? null : String(row.bot),
   });
 }
 
 async function pgLogs(limit: number) {
   const data = await db()`
-    select id, menu_date, meal, status, target, detail, created_at
+    select id, menu_date, meal, status, target, detail, created_at, bot
     from public.send_logs
     order by created_at desc
     limit ${limit}
@@ -380,7 +393,7 @@ async function pgLogs(limit: number) {
 async function pgLatest(menuDate: string, meal: MealKey, statuses: SendStatus[], targetId?: string) {
   const sql = db();
   const data = await sql`
-    select id, menu_date, meal, status, target, target_id, detail, created_at
+    select id, menu_date, meal, status, target, target_id, detail, created_at, bot
     from public.send_logs
     where menu_date = ${menuDate}::date and meal = ${meal} and status = any(${statuses}::text[])
       ${targetId === undefined ? sql`` : sql`and target_id = ${targetId}`}
@@ -393,9 +406,9 @@ async function pgLatest(menuDate: string, meal: MealKey, statuses: SendStatus[],
 async function pgInsertLog(input: Omit<SendLog, "id" | "createdAt">) {
   try {
     const data = await db()`
-      insert into public.send_logs (menu_date, meal, status, target, target_id, detail)
-      values (${input.menuDate}::date, ${input.meal}, ${input.status}, ${input.target}, ${input.targetId ?? ""}, ${input.detail})
-      returning id, menu_date, meal, status, target, detail, created_at
+      insert into public.send_logs (menu_date, meal, status, target, target_id, detail, bot)
+      values (${input.menuDate}::date, ${input.meal}, ${input.status}, ${input.target}, ${input.targetId ?? ""}, ${input.detail}, ${input.bot ?? null})
+      returning id, menu_date, meal, status, target, detail, created_at, bot
     `;
     return mapPgLog(data[0]);
   } catch (error) {
@@ -406,10 +419,12 @@ async function pgInsertLog(input: Omit<SendLog, "id" | "createdAt">) {
   }
 }
 
-async function pgUpdateLog(id: string, patch: { status: SendStatus; detail: string | null }) {
+async function pgUpdateLog(id: string, patch: { status: SendStatus; detail: string | null; bot?: BotId | null }) {
   await db()`
     update public.send_logs
-    set status = ${patch.status}, detail = ${patch.detail}
+    set status = ${patch.status},
+        detail = ${patch.detail},
+        bot = coalesce(${patch.bot ?? null}, bot)
     where id = ${id}::uuid
   `;
 }
@@ -580,13 +595,14 @@ export const store = {
     dbMem.logs.push(row);
     return row;
   },
-  async updateLog(id: string, patch: { status: SendStatus; detail: string | null }) {
+  async updateLog(id: string, patch: { status: SendStatus; detail: string | null; bot?: BotId | null }) {
     if (isDatabaseUrlConfigured()) return pgUpdateLog(id, patch);
     if (isSupabaseJsConfigured()) return sbUpdateLog(id, patch);
     const row = memory().logs.find((log) => log.id === id);
     if (row) {
       row.status = patch.status;
       row.detail = patch.detail;
+      if (patch.bot !== undefined) row.bot = patch.bot;
     }
   },
   async hasMenuAsk(menuDate: string, meal: MealKey, targetId: string) {

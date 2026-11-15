@@ -1,6 +1,6 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { isDatabaseUrlConfigured } from "@/lib/server/db";
-import { resolveLineAccessToken, resolveLineChannelSecret } from "@/lib/server/app-secrets";
+import { configuredLineBots } from "@/lib/server/app-secrets";
 import { resolveLineTarget } from "@/lib/server/line-targets";
 
 export function isSupabaseConfigured() {
@@ -42,12 +42,8 @@ export function supabaseAdmin() {
 }
 
 export async function lineConfigured() {
-  const [token, secret, target] = await Promise.all([
-    resolveLineAccessToken(),
-    resolveLineChannelSecret(),
-    resolveLineTarget(),
-  ]);
-  return Boolean(token && secret && target);
+  const [configured, target] = await Promise.all([configuredLineBots(), resolveLineTarget()]);
+  return Boolean((configured.bot1 || configured.bot2) && target);
 }
 
 export function maskTarget(target = process.env.LINE_TARGET_ID || "") {
