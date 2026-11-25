@@ -17,6 +17,11 @@ export const LINE_BOT_SECRET_KEYS = {
   },
 } as const;
 
+export const LINE_BOT_ENABLED_KEYS = {
+  "1": "LINE_BOT_1_ENABLED",
+  "2": "LINE_BOT_2_ENABLED",
+} as const;
+
 /** Day of year in the Bangkok calendar date (1–366). */
 export function bangkokDayOfYear(iso: string): number {
   const [year, month, day] = iso.split("-").map(Number);

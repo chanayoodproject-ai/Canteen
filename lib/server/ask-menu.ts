@@ -8,7 +8,7 @@ import {
   normalizeMenuQuestionText,
   REPLY_DEDUPE_MS,
 } from "@/lib/menu-question";
-import { configuredLineBots } from "@/lib/server/app-secrets";
+import { configuredLineBots, isLineBotEnabled } from "@/lib/server/app-secrets";
 import { replyLine, replyLineMessages } from "@/lib/server/line";
 import { getTargetBots } from "@/lib/server/line-targets";
 import { dishOn, store } from "@/lib/server/store";
@@ -40,6 +40,9 @@ export async function alreadyDelivered(menuDate: string, meal: MealKey, targetId
 export async function handleMenuQuestion(event: TextEvent, bot: BotId = "1") {
   if (event.type !== "message" || event.message?.type !== "text" || !event.replyToken) {
     return { handled: false, replied: false, markedSent: false };
+  }
+  if (!(await isLineBotEnabled(bot))) {
+    return { handled: false, replied: false, markedSent: false, skipped: true };
   }
   const text = event.message.text || "";
   const now = bangkokNow();

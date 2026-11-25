@@ -1,9 +1,11 @@
 import type { BotId } from "@/lib/line-bots";
 import { applyBotPresence, botsFromFlags, type BotPresence } from "@/lib/line-bots";
 import { planTargets, type TargetRow } from "@/lib/line-target-plan";
-import { db, isDatabaseUrlConfigured, withDbRetry } from "@/lib/server/db";
+import { asIso, db, isDatabaseUrlConfigured, withDbRetry } from "@/lib/server/db";
+import { maskTarget } from "@/lib/server/supabase";
 
 export type TargetState = { id: string; active: boolean; bots: BotId[] };
+export type TargetDetail = { idMasked: string; type: string; bots: BotId[]; lastSeen: string | null };
 
 function presenceFromRow(row: { bot_1?: unknown; bot_2?: unknown; active?: unknown }): BotPresence {
   // Legacy rows (or a missing column during rollout) are treated as bot 1 only.
@@ -102,6 +104,37 @@ export async function listSendTargetStates(): Promise<TargetState[]> {
     const row = map.get(id);
     return { id, active: row?.active ?? true, bots: row?.bots?.length ? row.bots : (["1"] as BotId[]) };
   });
+}
+
+export async function listActiveTargetDetails(): Promise<TargetDetail[]> {
+  if (process.env.LINE_TARGET_ID) {
+    return [{ idMasked: maskTarget(process.env.LINE_TARGET_ID), type: "override", bots: ["1", "2"], lastSeen: null }];
+  }
+  if (!isDatabaseUrlConfigured()) return [];
+  try {
+    const rows = await withDbRetry(
+      () => db()`
+        SELECT id, type, active, bot_1, bot_2, last_seen
+        FROM public.line_targets
+        WHERE active = true
+        ORDER BY last_seen DESC NULLS LAST
+      `,
+    );
+    return rows
+      .map((row) => {
+        const presence = presenceFromRow(row);
+        if (!presence.active) return null;
+        return {
+          idMasked: maskTarget(String(row.id)),
+          type: String(row.type || "group"),
+          bots: botsFromFlags(presence.bot1, presence.bot2),
+          lastSeen: row.last_seen ? asIso(row.last_seen) : null,
+        };
+      })
+      .filter((item): item is TargetDetail => item !== null);
+  } catch {
+    return [];
+  }
 }
 
 export async function getTargetBots(id: string): Promise<BotId[]> {

@@ -7,7 +7,7 @@ import {
   type SendSlot,
 } from "@/lib/send-plan";
 import { bangkokNow, hasTimeArrived, timeToMinutes, type BangkokNow } from "@/lib/time";
-import { configuredLineBots } from "@/lib/server/app-secrets";
+import { anyLineBotHasCredentials, configuredLineBots } from "@/lib/server/app-secrets";
 import { pushFlex } from "@/lib/server/line";
 import { listSendTargetStates, markLineBotLeft, resolveLineTarget } from "@/lib/server/line-targets";
 import { summarizeTargets, type TargetOutcome } from "@/lib/line-target-plan";
@@ -38,6 +38,7 @@ export function isWithinAutoSendWindow(now: BangkokNow, sendTime: string) {
 
 export async function runSend(options: {
   onlyMeal?: MealKey;
+  onlyBot?: BotId;
   date?: string;
   force?: boolean;
   test?: boolean;
@@ -90,8 +91,22 @@ export async function runSend(options: {
     }
 
     if (options.test) {
-      const testTarget = await resolveLineTarget();
-      const pushed = await pushFlex({ date, meals: dishes, to: testTarget });
+      const [targets, configured] = await Promise.all([sendTargets(), configuredLineBots()]);
+      const chosenTarget = options.onlyBot
+        ? targets.find((t) => t.bots.includes(options.onlyBot!)) ?? targets[0]
+        : targets[0];
+      const testTarget = chosenTarget?.id ?? (await resolveLineTarget());
+      const testBot: BotId =
+        options.onlyBot ??
+        (chosenTarget
+          ? pickSendBot({
+              date,
+              bot1Configured: configured.bot1,
+              bot2Configured: configured.bot2,
+              botsInGroup: chosenTarget.bots,
+            }) ?? chosenTarget.bots[0] ?? "1"
+          : "1");
+      const pushed = await pushFlex({ date, meals: dishes, to: testTarget, bot: testBot });
       for (const item of dishes) {
         await store.insertLog({
           menuDate: date,
@@ -99,7 +114,12 @@ export async function runSend(options: {
           status: "test",
           target: maskTarget(testTarget),
           targetId: testTarget,
-          detail: pushed.ok ? "ส่งทดสอบแล้ว" : pushed.simulated ? "จำลองข้อความทดสอบ เพราะยังไม่มี LINE" : pushed.error,
+          bot: testBot,
+          detail: pushed.ok
+            ? `ส่งทดสอบแล้วด้วยบอท ${testBot}`
+            : pushed.simulated
+              ? "จำลองข้อความทดสอบ เพราะยังไม่มี LINE หรือปิดบอทไว้"
+              : pushed.error,
         });
       }
       results.push({
@@ -107,12 +127,23 @@ export async function runSend(options: {
         meals: slot.meals,
         slotId: slot.id,
         status: pushed.ok ? "test" : pushed.simulated ? "simulated" : "failed",
-        detail: pushed.ok ? "ส่งทดสอบแล้ว" : pushed.error || "จำลองการส่ง",
+        detail: pushed.ok ? `ส่งทดสอบแล้วด้วยบอท ${testBot}` : pushed.error || "จำลองการส่ง",
       });
       continue;
     }
 
     if (!(await lineConfigured())) {
+      const [hasCreds, fallbackTarget] = await Promise.all([anyLineBotHasCredentials(), resolveLineTarget()]);
+      if (hasCreds && fallbackTarget) {
+        results.push({
+          meal: firstMeal,
+          meals: slot.meals,
+          slotId: slot.id,
+          status: "skipped",
+          detail: "ปิดการใช้งาน LINE Bot ไว้",
+        });
+        continue;
+      }
       if (options.dryRun) {
         results.push({
           meal: firstMeal,
@@ -201,7 +232,7 @@ async function sendSlotToTarget(input: {
   };
   const bot = pickSendBot(pickInput);
   if (!bot) {
-    return { target: masked, status: "skipped", detail: "ยังไม่ได้ตั้งค่า LINE" };
+    return { target: masked, status: "skipped", detail: "ยังไม่ได้ตั้งค่าหรือปิดใช้งานบอทในกลุ่มนี้" };
   }
   if (input.dryRun) {
     return { target: masked, status: "would_send", detail: `จะส่ง${slot.label}เข้ากลุ่ม ${masked} ด้วยบอท ${bot}` };
