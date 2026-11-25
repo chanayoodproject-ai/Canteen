@@ -14,6 +14,8 @@ const DB_FIRST_KEYS = new Set<string>([
   LINE_BOT_SECRET_KEYS["2"].secret,
   LINE_BOT_ENABLED_KEYS["1"],
   LINE_BOT_ENABLED_KEYS["2"],
+  "LINE_BOT_2_SEND_PLAN",
+  "LINE_BOT_2_SEND_SETTINGS",
 ]);
 
 export async function getAppSecret(key: string) {

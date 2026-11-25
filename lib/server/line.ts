@@ -135,6 +135,7 @@ export async function verifyLineSignature(body: string, signature: string | null
 
 const MEMBER_CACHE_MS = 10 * 60 * 1000;
 let memberCache: { count: number; at: number } | null = null;
+const memberCacheByBot = new Map<BotId, { count: number; at: number }>();
 
 export async function lineGroupMemberCount(targetId: string, bot: BotId = "1"): Promise<number | null> {
   const token = await resolveLineAccessToken(bot);
@@ -170,5 +171,34 @@ export async function cachedActiveMemberCount(
     return { count: total, source: "line" };
   }
   if (memberCache) return { count: memberCache.count, source: "cache" };
+  return { count: DEFAULT_MEMBER_COUNT, source: "fallback" };
+}
+
+export async function cachedActiveMemberCountForBot(
+  targets: { id: string; bots: BotId[] }[],
+  bot: BotId,
+): Promise<{ count: number; source: "line" | "cache" | "fallback" }> {
+  const botTargets = targets.filter((target) => target.bots.includes(bot));
+  if (botTargets.length === 0) {
+    return { count: 0, source: "line" };
+  }
+  const cached = memberCacheByBot.get(bot);
+  if (cached && Date.now() - cached.at < MEMBER_CACHE_MS) {
+    return { count: cached.count, source: "cache" };
+  }
+  let total = 0;
+  let ok = false;
+  for (const target of botTargets) {
+    const count = await lineGroupMemberCount(target.id, bot);
+    if (count != null) {
+      total += count;
+      ok = true;
+    }
+  }
+  if (ok) {
+    memberCacheByBot.set(bot, { count: total, at: Date.now() });
+    return { count: total, source: "line" };
+  }
+  if (cached) return { count: cached.count, source: "cache" };
   return { count: DEFAULT_MEMBER_COUNT, source: "fallback" };
 }

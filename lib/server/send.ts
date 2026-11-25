@@ -8,6 +8,7 @@ import {
 } from "@/lib/send-plan";
 import { bangkokNow, hasTimeArrived, timeToMinutes, type BangkokNow } from "@/lib/time";
 import { anyLineBotHasCredentials, configuredLineBots } from "@/lib/server/app-secrets";
+import { getBotSchedule } from "@/lib/server/bot-schedule";
 import { pushFlex } from "@/lib/server/line";
 import { listSendTargetStates, markLineBotLeft, resolveLineTarget } from "@/lib/server/line-targets";
 import { summarizeTargets, type TargetOutcome } from "@/lib/line-target-plan";
@@ -47,155 +48,188 @@ export async function runSend(options: {
   const now = bangkokNow();
   const date = options.date ?? now.iso;
   const [year, month] = date.split("-").map(Number);
-  const [settings, monthCells, plan] = await Promise.all([
-    store.getSettings(),
+  const [monthCells, configured, allTargets] = await Promise.all([
     store.getMonth(year, month),
-    store.getPlan(),
+    configuredLineBots(),
+    listSendTargetStates(),
   ]);
-  const slots: SendSlot[] = options.onlyMeal
-    ? [
-        {
-          id: options.onlyMeal,
-          time: settings.find((item) => item.meal === options.onlyMeal)?.sendTime ?? "00:00",
-          meals: [options.onlyMeal],
-          label: MEAL_MAP[options.onlyMeal].full,
-          combined: false,
-        },
-      ]
-    : slotsFromPlan(planInEffect(plan, date), settings);
 
-  const results: { meal: MealKey; meals: MealKey[]; slotId: string; status: string; detail: string; targets?: TargetOutcome[] }[] = [];
-  let targetsCache: Awaited<ReturnType<typeof listSendTargetStates>> | null = null;
-  const sendTargets = async () => (targetsCache ??= await listSendTargetStates());
+  const botsToRun: BotId[] = options.onlyBot ? [options.onlyBot] : ["1", "2"];
+  const results: {
+    bot: BotId;
+    meal: MealKey;
+    meals: MealKey[];
+    slotId: string;
+    status: string;
+    detail: string;
+    targets?: TargetOutcome[];
+  }[] = [];
 
-  for (const slot of slots) {
-    const dishes = slot.meals
-      .map((meal) => ({ meal, dishText: dishOn(monthCells, date, meal) }))
-      .filter((item) => item.dishText.trim());
-    const firstMeal = slot.meals[0] ?? "lunch";
-    if (!options.force && !options.test && !options.onlyMeal && date !== now.iso) {
-      results.push({ meal: firstMeal, meals: slot.meals, slotId: slot.id, status: "skipped", detail: "ตัวตั้งเวลาส่งเฉพาะเมนูของวันนี้" });
-      continue;
-    }
-    if (!options.force && !options.test && !hasTimeArrived(now, slot.time)) {
-      results.push({ meal: firstMeal, meals: slot.meals, slotId: slot.id, status: "skipped", detail: `ยังไม่ถึง ${slot.time}` });
-      continue;
-    }
-    if (!options.force && !options.test && !isWithinAutoSendWindow(now, slot.time)) {
-      results.push({ meal: firstMeal, meals: slot.meals, slotId: slot.id, status: "skipped", detail: `เลยช่วงส่ง ${slot.time} แล้ว` });
-      continue;
-    }
-    if (!dishes.length) {
-      results.push({ meal: firstMeal, meals: slot.meals, slotId: slot.id, status: "skipped", detail: "วันนี้ยังไม่มีข้อความเมนู" });
-      continue;
-    }
-
-    if (options.test) {
-      const [targets, configured] = await Promise.all([sendTargets(), configuredLineBots()]);
-      const chosenTarget = options.onlyBot
-        ? targets.find((t) => t.bots.includes(options.onlyBot!)) ?? targets[0]
-        : targets[0];
-      const testTarget = chosenTarget?.id ?? (await resolveLineTarget());
-      const testBot: BotId =
-        options.onlyBot ??
-        (chosenTarget
-          ? pickSendBot({
-              date,
-              bot1Configured: configured.bot1,
-              bot2Configured: configured.bot2,
-              botsInGroup: chosenTarget.bots,
-            }) ?? chosenTarget.bots[0] ?? "1"
-          : "1");
-      const pushed = await pushFlex({ date, meals: dishes, to: testTarget, bot: testBot });
-      for (const item of dishes) {
-        await store.insertLog({
-          menuDate: date,
-          meal: item.meal,
-          status: "test",
-          target: maskTarget(testTarget),
-          targetId: testTarget,
-          bot: testBot,
-          detail: pushed.ok
-            ? `ส่งทดสอบแล้วด้วยบอท ${testBot}`
-            : pushed.simulated
-              ? "จำลองข้อความทดสอบ เพราะยังไม่มี LINE หรือปิดบอทไว้"
-              : pushed.error,
-        });
-      }
-      results.push({
-        meal: firstMeal,
-        meals: slot.meals,
-        slotId: slot.id,
-        status: pushed.ok ? "test" : pushed.simulated ? "simulated" : "failed",
-        detail: pushed.ok ? `ส่งทดสอบแล้วด้วยบอท ${testBot}` : pushed.error || "จำลองการส่ง",
+  for (const botId of botsToRun) {
+    const botTargets = allTargets.filter((target) => {
+      if (options.onlyBot) return target.bots.includes(botId);
+      const picked = pickSendBot({
+        date,
+        bot1Configured: configured.bot1,
+        bot2Configured: configured.bot2,
+        botsInGroup: target.bots,
       });
+      return picked === botId;
+    });
+
+    // When running cron for both bots, skip Bot 2 cleanly if it has no assigned groups yet.
+    if (!options.onlyBot && botId === "2" && botTargets.length === 0) {
       continue;
     }
 
-    if (!(await lineConfigured())) {
-      const [hasCreds, fallbackTarget] = await Promise.all([anyLineBotHasCredentials(), resolveLineTarget()]);
-      if (hasCreds && fallbackTarget) {
+    const { settings, plan } = await getBotSchedule(botId);
+    const slots: SendSlot[] = options.onlyMeal
+      ? [
+          {
+            id: options.onlyMeal,
+            time: settings.find((item) => item.meal === options.onlyMeal)?.sendTime ?? "00:00",
+            meals: [options.onlyMeal],
+            label: MEAL_MAP[options.onlyMeal].full,
+            combined: false,
+          },
+        ]
+      : slotsFromPlan(planInEffect(plan, date), settings);
+
+    for (const slot of slots) {
+      const dishes = slot.meals
+        .map((meal) => ({ meal, dishText: dishOn(monthCells, date, meal) }))
+        .filter((item) => item.dishText.trim());
+      const firstMeal = slot.meals[0] ?? "lunch";
+      if (!options.force && !options.test && !options.onlyMeal && date !== now.iso) {
+        results.push({ bot: botId, meal: firstMeal, meals: slot.meals, slotId: slot.id, status: "skipped", detail: "ตัวตั้งเวลาส่งเฉพาะเมนูของวันนี้" });
+        continue;
+      }
+      if (!options.force && !options.test && !hasTimeArrived(now, slot.time)) {
+        results.push({ bot: botId, meal: firstMeal, meals: slot.meals, slotId: slot.id, status: "skipped", detail: `ยังไม่ถึง ${slot.time}` });
+        continue;
+      }
+      if (!options.force && !options.test && !isWithinAutoSendWindow(now, slot.time)) {
+        results.push({ bot: botId, meal: firstMeal, meals: slot.meals, slotId: slot.id, status: "skipped", detail: `เลยช่วงส่ง ${slot.time} แล้ว` });
+        continue;
+      }
+      if (!dishes.length) {
+        results.push({ bot: botId, meal: firstMeal, meals: slot.meals, slotId: slot.id, status: "skipped", detail: "วันนี้ยังไม่มีข้อความเมนู" });
+        continue;
+      }
+
+      if (options.test) {
+        const chosenTarget = botTargets[0] ?? allTargets[0];
+        const testTarget = chosenTarget?.id ?? (await resolveLineTarget());
+        const testBot: BotId = options.onlyBot ?? botId;
+        const pushed = await pushFlex({ date, meals: dishes, to: testTarget, bot: testBot });
+        for (const item of dishes) {
+          await store.insertLog({
+            menuDate: date,
+            meal: item.meal,
+            status: "test",
+            target: maskTarget(testTarget),
+            targetId: testTarget,
+            bot: testBot,
+            detail: pushed.ok
+              ? `ส่งทดสอบแล้วด้วยบอท ${testBot}`
+              : pushed.simulated
+                ? "จำลองข้อความทดสอบ เพราะยังไม่มี LINE หรือปิดบอทไว้"
+                : pushed.error,
+          });
+        }
         results.push({
+          bot: testBot,
+          meal: firstMeal,
+          meals: slot.meals,
+          slotId: slot.id,
+          status: pushed.ok ? "test" : pushed.simulated ? "simulated" : "failed",
+          detail: pushed.ok ? `ส่งทดสอบแล้วด้วยบอท ${testBot}` : pushed.error || "จำลองการส่ง",
+        });
+        continue;
+      }
+
+      if (!(await lineConfigured())) {
+        const [hasCreds, fallbackTarget] = await Promise.all([anyLineBotHasCredentials(), resolveLineTarget()]);
+        if (hasCreds && fallbackTarget) {
+          results.push({
+            bot: botId,
+            meal: firstMeal,
+            meals: slot.meals,
+            slotId: slot.id,
+            status: "skipped",
+            detail: "ปิดการใช้งาน LINE Bot ไว้",
+          });
+          continue;
+        }
+        if (options.dryRun) {
+          results.push({
+            bot: botId,
+            meal: firstMeal,
+            meals: slot.meals,
+            slotId: slot.id,
+            status: "would_simulate",
+            detail: "ยังไม่ได้ตั้งค่า LINE จึงจะบันทึกเป็นการจำลอง",
+          });
+          continue;
+        }
+        const simulated = await store.latestLog(date, firstMeal, ["simulated"]);
+        if (simulated && !options.force) {
+          results.push({
+            bot: botId,
+            meal: firstMeal,
+            meals: slot.meals,
+            slotId: slot.id,
+            status: "skipped",
+            detail: "จำลองการส่งไปแล้ว ตั้งค่า LINE แล้วกดส่งทดสอบ",
+          });
+          continue;
+        }
+        for (const item of dishes) {
+          await store.insertLog({
+            menuDate: date,
+            meal: item.meal,
+            status: "simulated",
+            target: null,
+            bot: botId,
+            detail: "ยังไม่ได้ตั้งค่า LINE จึงบันทึกเป็นการจำลอง ไม่ได้ส่งจริง",
+          });
+        }
+        results.push({ bot: botId, meal: firstMeal, meals: slot.meals, slotId: slot.id, status: "simulated", detail: "จำลองการส่งแล้ว" });
+        continue;
+      }
+
+      const targetsForSlot = botTargets;
+      if (targetsForSlot.length === 0) {
+        results.push({
+          bot: botId,
           meal: firstMeal,
           meals: slot.meals,
           slotId: slot.id,
           status: "skipped",
-          detail: "ปิดการใช้งาน LINE Bot ไว้",
+          detail: `ยังไม่มีกลุ่มที่บอท ${botId} ใช้งานได้`,
         });
         continue;
       }
-      if (options.dryRun) {
-        results.push({
-          meal: firstMeal,
-          meals: slot.meals,
-          slotId: slot.id,
-          status: "would_simulate",
-          detail: "ยังไม่ได้ตั้งค่า LINE จึงจะบันทึกเป็นการจำลอง",
-        });
-        continue;
-      }
-      const simulated = await store.latestLog(date, firstMeal, ["simulated"]);
-      if (simulated && !options.force) {
-        results.push({
-          meal: firstMeal,
-          meals: slot.meals,
-          slotId: slot.id,
-          status: "skipped",
-          detail: "จำลองการส่งไปแล้ว ตั้งค่า LINE แล้วกดส่งทดสอบ",
-        });
-        continue;
-      }
-      for (const item of dishes) {
-        await store.insertLog({
-          menuDate: date,
-          meal: item.meal,
-          status: "simulated",
-          target: null,
-          detail: "ยังไม่ได้ตั้งค่า LINE จึงบันทึกเป็นการจำลอง ไม่ได้ส่งจริง",
-        });
-      }
-      results.push({ meal: firstMeal, meals: slot.meals, slotId: slot.id, status: "simulated", detail: "จำลองการส่งแล้ว" });
-      continue;
-    }
 
-    const outcomes: TargetOutcome[] = [];
-    const configured = await configuredLineBots();
-    for (const target of await sendTargets()) {
-      outcomes.push(
-        await sendSlotToTarget({
-          date,
-          slot,
-          dishes,
-          targetId: target.id,
-          botsInGroup: target.bots,
-          bot1Configured: configured.bot1,
-          bot2Configured: configured.bot2,
-          dryRun: options.dryRun,
-        }),
-      );
+      const outcomes: TargetOutcome[] = [];
+      for (const target of targetsForSlot) {
+        outcomes.push(
+          await sendSlotToTarget({
+            date,
+            slot,
+            dishes,
+            targetId: target.id,
+            botsInGroup: target.bots,
+            bot1Configured: configured.bot1,
+            bot2Configured: configured.bot2,
+            preferredBot: botId,
+            dryRun: options.dryRun,
+          }),
+        );
+      }
+      const summary = summarizeTargets(outcomes);
+      results.push({ bot: botId, meal: firstMeal, meals: slot.meals, slotId: slot.id, ...summary, targets: outcomes });
     }
-    const summary = summarizeTargets(outcomes);
-    results.push({ meal: firstMeal, meals: slot.meals, slotId: slot.id, ...summary, targets: outcomes });
   }
 
   return { date, bangkok: now, results };
@@ -209,6 +243,7 @@ async function sendSlotToTarget(input: {
   botsInGroup: BotId[];
   bot1Configured: boolean;
   bot2Configured: boolean;
+  preferredBot: BotId;
   dryRun?: boolean;
 }): Promise<TargetOutcome> {
   const { date, slot, dishes, targetId } = input;
@@ -230,9 +265,10 @@ async function sendSlotToTarget(input: {
     bot2Configured: input.bot2Configured,
     botsInGroup: input.botsInGroup,
   };
-  const bot = pickSendBot(pickInput);
-  if (!bot) {
-    return { target: masked, status: "skipped", detail: "ยังไม่ได้ตั้งค่าหรือปิดใช้งานบอทในกลุ่มนี้" };
+  const bot = input.preferredBot;
+  const isConfigured = bot === "1" ? input.bot1Configured : input.bot2Configured;
+  if (!isConfigured) {
+    return { target: masked, status: "skipped", detail: `บอท ${bot} ยังไม่ได้ตั้งค่าหรือปิดใช้งานอยู่` };
   }
   if (input.dryRun) {
     return { target: masked, status: "would_send", detail: `จะส่ง${slot.label}เข้ากลุ่ม ${masked} ด้วยบอท ${bot}` };
