@@ -238,13 +238,7 @@ export function decideMenuQuestion(
 
   // Same-day questions always get a reply, even after that meal's send time,
   // because replies are free and people still ask after the morning card.
-  if (mentioned) {
-    return { kind: "ask", date, meals: [mentioned], day: "today" };
-  }
-
-  const upcoming = nextUpcomingMeal(now, settings);
-  if (upcoming) return { kind: "ask", date, meals: [upcoming], day: "today" };
-  return { kind: "ask", date, meals: [...MEAL_KEYS], day: "today" };
+  return { kind: "ask", date, meals: mentioned ? [mentioned] : [...MEAL_KEYS], day: "today" };
 }
 
 export const REPLY_DEDUPE_MS = 60_000;
