@@ -14,7 +14,7 @@ import { bangkokNow } from "@/lib/time";
 
 export const dynamic = "force-dynamic";
 export const preferredRegion = "bom1";
-export const maxDuration = 15;
+export const maxDuration = 30;
 
 function maskTokenHint(token: string) {
   if (!token) return "";

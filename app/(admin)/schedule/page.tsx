@@ -151,7 +151,16 @@ export default function SchedulePage() {
     await load(activeBot);
   }
 
-  if (error) return <p>{error}</p>;
+  if (error) {
+    return (
+      <div className="rounded-3xl bg-white p-6">
+        <p>{error}</p>
+        <Button className="mt-4" onClick={() => void load(activeBot)}>
+          ลองใหม่
+        </Button>
+      </div>
+    );
+  }
   if (!settings.length || !clock) return <div className="h-64 animate-pulse rounded-[2rem] bg-white/70" />;
 
   const projection = live?.projection;

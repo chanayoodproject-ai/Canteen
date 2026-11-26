@@ -8,7 +8,7 @@ import { countActiveTargets } from "@/lib/server/line-targets";
 
 export const dynamic = "force-dynamic";
 export const preferredRegion = "bom1";
-export const maxDuration = 15;
+export const maxDuration = 30;
 
 export async function GET() {
   try {

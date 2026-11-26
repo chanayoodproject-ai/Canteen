@@ -20,7 +20,7 @@ import { store, type SendSetting } from "@/lib/server/store";
 
 export const dynamic = "force-dynamic";
 export const preferredRegion = "bom1";
-export const maxDuration = 15;
+export const maxDuration = 30;
 
 function sentSlotIds(date: string, slots: ReturnType<typeof slotsFromPlan>, logs: { menuDate: string; meal: string; status: string }[]) {
   return slots

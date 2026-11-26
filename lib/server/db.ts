@@ -19,13 +19,13 @@ export function db() {
     sql = postgres(process.env.DATABASE_URL!, {
       prepare: false,
       ssl: "require",
-      max: 5,
+      max: 10,
       idle_timeout: 5,
-      connect_timeout: 10,
+      connect_timeout: 5,
       max_lifetime: 60,
       connection: {
         application_name: "canteen",
-        statement_timeout: 8000,
+        statement_timeout: 6000,
       },
     });
   }
